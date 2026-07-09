@@ -124,6 +124,8 @@ namespace SHMS.Backend.Controllers
             appointment.AppointmentDate = model.AppointmentDate;
             await _context.SaveChangesAsync();
 
+            await _hubContext.Clients.All.SendAsync("AppointmentUpdated", id, "Rescheduled");
+
             return Ok(appointment);
         }
 
@@ -158,6 +160,8 @@ namespace SHMS.Backend.Controllers
                 _context.Bills.Remove(bill);
                 await _context.SaveChangesAsync();
             }
+
+            await _hubContext.Clients.All.SendAsync("AppointmentUpdated", id, "Cancelled");
 
             return Ok(appointment);
         }
