@@ -63,6 +63,21 @@ namespace SHMS.Backend
                     ValidIssuer = Configuration["JWT:ValidIssuer"] ?? "http://localhost:5050",
                     IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secret))
                 };
+                // Allow SignalR WebSocket connections to pass the JWT token via query string
+                // because WebSocket/SSE transports cannot set HTTP Authorization headers
+                options.Events = new JwtBearerEvents
+                {
+                    OnMessageReceived = context =>
+                    {
+                        var accessToken = context.Request.Query["access_token"];
+                        var path = context.HttpContext.Request.Path;
+                        if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/hubs"))
+                        {
+                            context.Token = accessToken;
+                        }
+                        return System.Threading.Tasks.Task.CompletedTask;
+                    }
+                };
             });
 
             // Configure CORS
