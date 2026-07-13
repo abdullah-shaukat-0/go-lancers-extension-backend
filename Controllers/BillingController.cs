@@ -218,10 +218,11 @@ namespace SHMS.Backend.Controllers
         public async Task<IActionResult> GetBillingStats()
         {
             var bills = await _context.Bills.ToListAsync();
+            var expenses = await _context.Expenses.ToListAsync();
             var totalRevenue = bills.Where(b => b.PaymentStatus == PaidStatus).Sum(b => b.Amount);
             var pendingAmount = bills.Where(b => b.PaymentStatus == PendingStatus).Sum(b => b.Amount);
             var cancelledAmount = bills.Where(b => b.PaymentStatus == CancelledStatus).Sum(b => b.Amount);
-            var totalExpenses = await _context.Expenses.SumAsync(e => e.Amount);
+            var totalExpenses = expenses.Sum(e => e.Amount);
 
             return Ok(new
             {
