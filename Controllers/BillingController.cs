@@ -58,6 +58,20 @@ namespace SHMS.Backend.Controllers
             return Ok(bill);
         }
 
+        [HttpGet("patient/{patientId}")]
+        public async Task<IActionResult> GetBillsByPatient(int patientId)
+        {
+            var bills = await _context.Bills
+                .Include(b => b.Patient).ThenInclude(p => p.User)
+                .Include(b => b.Appointment).ThenInclude(a => a.Doctor).ThenInclude(d => d.User)
+                .Include(b => b.Items).ThenInclude(i => i.HospitalService)
+                .Where(b => b.PatientId == patientId)
+                .OrderByDescending(b => b.DateGenerated)
+                .ToListAsync();
+
+            return Ok(bills);
+        }
+
         [HttpPost]
         public async Task<IActionResult> GenerateManualBill([FromBody] ManualBillModel model)
         {
@@ -212,6 +226,17 @@ namespace SHMS.Backend.Controllers
             await _context.SaveChangesAsync();
 
             return Ok(service);
+        }
+
+        [HttpGet("expenses")]
+        public async Task<IActionResult> GetExpenses()
+        {
+            var expenses = await _context.Expenses
+                .OrderByDescending(e => e.ExpenseDate)
+                .ThenByDescending(e => e.Id)
+                .ToListAsync();
+
+            return Ok(expenses);
         }
 
         [HttpGet("stats")]
