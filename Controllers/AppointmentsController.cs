@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using SHMS.Backend.Data;
 using SHMS.Backend.Models;
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 
@@ -84,14 +85,32 @@ namespace SHMS.Backend.Controllers
             _context.Appointments.Add(appointment);
             await _context.SaveChangesAsync();
 
-            // Auto-generate a billing entry for the appointment (e.g. flat consultation fee of $100)
+            var consultationService = await GetOrCreateConsultationServiceAsync();
+
+            // Auto-generate a consultation invoice for the appointment.
             var bill = new Bill
             {
                 PatientId = model.PatientId,
                 AppointmentId = appointment.Id,
-                Amount = 100.00m,
+                InvoiceNumber = await GenerateInvoiceNumberAsync(),
+                Subtotal = consultationService.Price,
+                DiscountAmount = 0,
+                TaxAmount = 0,
+                Amount = consultationService.Price,
                 PaymentStatus = "Pending",
-                DateGenerated = DateTime.UtcNow
+                Notes = "Auto-generated from appointment booking.",
+                DateGenerated = DateTime.UtcNow,
+                Items = new List<BillItem>
+                {
+                    new BillItem
+                    {
+                        HospitalServiceId = consultationService.Id,
+                        Description = consultationService.Name,
+                        Quantity = 1,
+                        UnitPrice = consultationService.Price,
+                        LineTotal = consultationService.Price
+                    }
+                }
             };
             _context.Bills.Add(bill);
             await _context.SaveChangesAsync();
@@ -160,6 +179,32 @@ namespace SHMS.Backend.Controllers
             }
 
             return Ok(appointment);
+        }
+
+        private async Task<string> GenerateInvoiceNumberAsync()
+        {
+            var nextId = await _context.Bills.CountAsync() + 1;
+            return $"INV-{DateTime.UtcNow:yyyyMMdd}-{nextId:D5}";
+        }
+
+        private async Task<HospitalService> GetOrCreateConsultationServiceAsync()
+        {
+            var service = await _context.HospitalServices
+                .FirstOrDefaultAsync(s => s.Name == "Consultation" && s.IsActive);
+
+            if (service != null) return service;
+
+            service = new HospitalService
+            {
+                Name = "Consultation",
+                Category = "Appointment",
+                Price = 100.00m,
+                IsActive = true
+            };
+
+            _context.HospitalServices.Add(service);
+            await _context.SaveChangesAsync();
+            return service;
         }
     }
 
