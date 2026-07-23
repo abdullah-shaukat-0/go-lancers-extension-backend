@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using SHMS.Backend.Data;
 using SHMS.Backend.Models;
+using SHMS.Backend.Services;
 using System;
 using System.Linq;
 using System.Threading.Tasks;
@@ -15,10 +16,12 @@ namespace SHMS.Backend.Controllers
     public class CareInstructionsController : ControllerBase
     {
         private readonly SHMSDbContext _context;
+        private readonly IAuditService _auditService;
 
-        public CareInstructionsController(SHMSDbContext context)
+        public CareInstructionsController(SHMSDbContext context, IAuditService auditService)
         {
             _context = context;
+            _auditService = auditService;
         }
 
         // GET /api/careinstructions
@@ -32,6 +35,14 @@ namespace SHMS.Backend.Controllers
                 .Include(ci => ci.Nurse).ThenInclude(n => n.User)
                 .OrderByDescending(ci => ci.CreatedAt)
                 .ToListAsync();
+
+            await _auditService.LogAsync(new AuditLogEntry
+            {
+                Action       = "VIEW_CARE_INSTRUCTIONS",
+                ResourceType = "CareInstruction",
+                ResourceId   = "all",
+                Details      = $"Retrieved {instructions.Count} care instruction(s)"
+            });
 
             return Ok(instructions.Select(ci => MapToDto(ci)));
         }
@@ -48,6 +59,14 @@ namespace SHMS.Backend.Controllers
                 .OrderByDescending(ci => ci.CreatedAt)
                 .ToListAsync();
 
+            await _auditService.LogAsync(new AuditLogEntry
+            {
+                Action       = "VIEW_CARE_INSTRUCTIONS",
+                ResourceType = "CareInstruction",
+                ResourceId   = $"nurse/{nurseId}",
+                Details      = $"Nurse #{nurseId} retrieved {instructions.Count} care instruction(s)"
+            });
+
             return Ok(instructions.Select(ci => MapToDto(ci)));
         }
 
@@ -63,6 +82,14 @@ namespace SHMS.Backend.Controllers
                 .OrderByDescending(ci => ci.CreatedAt)
                 .ToListAsync();
 
+            await _auditService.LogAsync(new AuditLogEntry
+            {
+                Action       = "VIEW_CARE_INSTRUCTIONS",
+                ResourceType = "CareInstruction",
+                ResourceId   = $"doctor/{doctorId}",
+                Details      = $"Doctor #{doctorId} retrieved {instructions.Count} care instruction(s)"
+            });
+
             return Ok(instructions.Select(ci => MapToDto(ci)));
         }
 
@@ -77,6 +104,15 @@ namespace SHMS.Backend.Controllers
                 .Where(ci => ci.PatientId == patientId)
                 .OrderByDescending(ci => ci.CreatedAt)
                 .ToListAsync();
+
+            await _auditService.LogAsync(new AuditLogEntry
+            {
+                PatientId    = patientId,
+                Action       = "VIEW_CARE_INSTRUCTIONS",
+                ResourceType = "CareInstruction",
+                ResourceId   = $"patient/{patientId}",
+                Details      = $"Retrieved {instructions.Count} care instruction(s) for patient #{patientId}"
+            });
 
             return Ok(instructions.Select(ci => MapToDto(ci)));
         }
@@ -116,6 +152,15 @@ namespace SHMS.Backend.Controllers
                 .Include(ci => ci.Nurse).ThenInclude(n => n.User)
                 .FirstOrDefaultAsync(ci => ci.Id == instruction.Id);
 
+            await _auditService.LogAsync(new AuditLogEntry
+            {
+                PatientId    = dto.PatientId,
+                Action       = "CREATE_CARE_INSTRUCTION",
+                ResourceType = "CareInstruction",
+                ResourceId   = instruction.Id.ToString(),
+                Details      = $"Care instruction #{instruction.Id} created for patient #{dto.PatientId}"
+            });
+
             return Ok(MapToDto(created));
         }
 
@@ -133,6 +178,16 @@ namespace SHMS.Backend.Controllers
             instruction.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
+
+            await _auditService.LogAsync(new AuditLogEntry
+            {
+                PatientId    = instruction.PatientId,
+                Action       = "UPDATE_CARE_INSTRUCTION",
+                ResourceType = "CareInstruction",
+                ResourceId   = id.ToString(),
+                Details      = $"Care instruction #{id} updated"
+            });
+
             return Ok(new { Message = "Updated successfully." });
         }
 

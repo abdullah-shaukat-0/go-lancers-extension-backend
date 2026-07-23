@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using SHMS.Backend.Data;
 using SHMS.Backend.Models;
+using SHMS.Backend.Services;
 using System;
 using System.Linq;
 using System.Threading.Tasks;
@@ -15,10 +16,12 @@ namespace SHMS.Backend.Controllers
     public class BillingController : ControllerBase
     {
         private readonly SHMSDbContext _context;
+        private readonly IAuditService _auditService;
 
-        public BillingController(SHMSDbContext context)
+        public BillingController(SHMSDbContext context, IAuditService auditService)
         {
             _context = context;
+            _auditService = auditService;
         }
 
         [HttpGet]
@@ -33,6 +36,16 @@ namespace SHMS.Backend.Controllers
                 query = query.Where(b => b.PatientId == patientId.Value);
 
             var bills = await query.OrderByDescending(b => b.DateGenerated).ToListAsync();
+
+            await _auditService.LogAsync(new AuditLogEntry
+            {
+                PatientId    = patientId,
+                Action       = "VIEW_BILLING",
+                ResourceType = "Bill",
+                ResourceId   = patientId.HasValue ? patientId.ToString() : "all",
+                Details      = $"Retrieved {bills.Count} billing record(s)"
+            });
+
             return Ok(bills);
         }
 
@@ -51,6 +64,15 @@ namespace SHMS.Backend.Controllers
             _context.Bills.Add(bill);
             await _context.SaveChangesAsync();
 
+            await _auditService.LogAsync(new AuditLogEntry
+            {
+                PatientId    = model.PatientId,
+                Action       = "CREATE_INVOICE",
+                ResourceType = "Bill",
+                ResourceId   = bill.Id.ToString(),
+                Details      = $"Manual invoice of ${model.Amount} generated for patient #{model.PatientId}"
+            });
+
             return Ok(bill);
         }
 
@@ -62,6 +84,15 @@ namespace SHMS.Backend.Controllers
 
             bill.PaymentStatus = "Paid";
             await _context.SaveChangesAsync();
+
+            await _auditService.LogAsync(new AuditLogEntry
+            {
+                PatientId    = bill.PatientId,
+                Action       = "PAY_INVOICE",
+                ResourceType = "Bill",
+                ResourceId   = id.ToString(),
+                Details      = $"Invoice #{id} marked as paid for patient #{bill.PatientId}"
+            });
 
             return Ok(bill);
         }

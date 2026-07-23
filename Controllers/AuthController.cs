@@ -5,6 +5,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.IdentityModel.Tokens;
 using SHMS.Backend.Data;
 using SHMS.Backend.Models;
+using SHMS.Backend.Services;
 using System;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
@@ -21,17 +22,20 @@ namespace SHMS.Backend.Controllers
         private readonly RoleManager<IdentityRole> _roleManager;
         private readonly SHMSDbContext _context;
         private readonly IConfiguration _configuration;
+        private readonly IAuditService _auditService;
 
         public AuthController(
             UserManager<ApplicationUser> userManager,
             RoleManager<IdentityRole> roleManager,
             SHMSDbContext context,
-            IConfiguration configuration)
+            IConfiguration configuration,
+            IAuditService auditService)
         {
             _userManager = userManager;
             _roleManager = roleManager;
             _context = context;
             _configuration = configuration;
+            _auditService = auditService;
         }
 
         [HttpPost("register")]
@@ -108,6 +112,17 @@ namespace SHMS.Backend.Controllers
                 await _context.SaveChangesAsync();
             }
 
+            await _auditService.LogAsync(new AuditLogEntry
+            {
+                Action           = "REGISTER",
+                ResourceType     = "User",
+                ResourceId       = user.Id,
+                Details          = $"New {model.Role} account registered: {model.Username}",
+                OverrideUserId   = user.Id,
+                OverrideUserName = user.UserName,
+                OverrideUserRole = model.Role
+            });
+
             return Ok(new { Status = "Success", Message = "User created successfully!" });
         }
 
@@ -161,6 +176,17 @@ namespace SHMS.Backend.Controllers
                     if (n != null) profileId = n.Id;
                 }
 
+                await _auditService.LogAsync(new AuditLogEntry
+                {
+                    Action           = "LOGIN",
+                    ResourceType     = "User",
+                    ResourceId       = user.Id,
+                    Details          = $"User '{user.UserName}' ({user.Role}) logged in successfully",
+                    OverrideUserId   = user.Id,
+                    OverrideUserName = user.UserName,
+                    OverrideUserRole = user.Role
+                });
+
                 return Ok(new
                 {
                     token = new JwtSecurityTokenHandler().WriteToken(token),
@@ -172,6 +198,17 @@ namespace SHMS.Backend.Controllers
                     profileId = profileId
                 });
             }
+
+            await _auditService.LogAsync(new AuditLogEntry
+            {
+                Action           = "LOGIN_FAILED",
+                ResourceType     = "User",
+                ResourceId       = model.Username,
+                Details          = $"Failed login attempt for username: {model.Username}",
+                WasSuccessful    = false,
+                OverrideUserName = model.Username
+            });
+
             return Unauthorized(new { Message = "Invalid username or password" });
         }
     }

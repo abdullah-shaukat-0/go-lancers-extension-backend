@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using SHMS.Backend.Data;
 using SHMS.Backend.Models;
+using SHMS.Backend.Services;
 using System;
 using System.Linq;
 using System.Threading.Tasks;
@@ -16,13 +17,15 @@ namespace SHMS.Backend.Controllers
     public class AppointmentsController : ControllerBase
     {
         private readonly SHMSDbContext _context;
+        private readonly IAuditService _auditService;
 
         public Microsoft.AspNetCore.SignalR.IHubContext<SHMS.Backend.Hubs.HospitalHub> _hubContext { get; }
 
-        public AppointmentsController(SHMSDbContext context, Microsoft.AspNetCore.SignalR.IHubContext<SHMS.Backend.Hubs.HospitalHub> hubContext)
+        public AppointmentsController(SHMSDbContext context, Microsoft.AspNetCore.SignalR.IHubContext<SHMS.Backend.Hubs.HospitalHub> hubContext, IAuditService auditService)
         {
             _context = context;
             _hubContext = hubContext;
+            _auditService = auditService;
         }
 
         [HttpGet]
@@ -40,6 +43,16 @@ namespace SHMS.Backend.Controllers
                 query = query.Where(a => a.DoctorId == doctorId.Value);
 
             var appointments = await query.OrderByDescending(a => a.AppointmentDate).ToListAsync();
+
+            await _auditService.LogAsync(new AuditLogEntry
+            {
+                PatientId    = patientId,
+                Action       = "VIEW_APPOINTMENTS",
+                ResourceType = "Appointment",
+                ResourceId   = patientId.HasValue ? patientId.ToString() : "all",
+                Details      = $"Retrieved {appointments.Count} appointment(s)"
+            });
+
             return Ok(appointments);
         }
 
@@ -99,6 +112,15 @@ namespace SHMS.Backend.Controllers
             // Broadcast real-time booking alert to system dashboards
             await _hubContext.Clients.All.SendAsync("ReceiveMessage", "System", $"New appointment booked for Patient #{model.PatientId}");
 
+            await _auditService.LogAsync(new AuditLogEntry
+            {
+                PatientId    = model.PatientId,
+                Action       = "BOOK_APPOINTMENT",
+                ResourceType = "Appointment",
+                ResourceId   = appointment.Id.ToString(),
+                Details      = $"Appointment #{appointment.Id} booked for patient #{model.PatientId} on {model.AppointmentDate:yyyy-MM-dd}"
+            });
+
             return CreatedAtAction(nameof(GetAppointmentById), new { id = appointment.Id }, appointment);
         }
 
@@ -124,6 +146,15 @@ namespace SHMS.Backend.Controllers
             appointment.AppointmentDate = model.AppointmentDate;
             await _context.SaveChangesAsync();
 
+            await _auditService.LogAsync(new AuditLogEntry
+            {
+                PatientId    = appointment.PatientId,
+                Action       = "RESCHEDULE_APPOINTMENT",
+                ResourceType = "Appointment",
+                ResourceId   = id.ToString(),
+                Details      = $"Appointment #{id} rescheduled to {model.AppointmentDate:yyyy-MM-dd HH:mm}"
+            });
+
             await _hubContext.Clients.All.SendAsync("AppointmentUpdated", id, "Rescheduled");
 
             return Ok(appointment);
@@ -140,6 +171,15 @@ namespace SHMS.Backend.Controllers
             appointment.Prescription = model.Prescription ?? appointment.Prescription;
 
             await _context.SaveChangesAsync();
+
+            await _auditService.LogAsync(new AuditLogEntry
+            {
+                PatientId    = appointment.PatientId,
+                Action       = "COMPLETE_APPOINTMENT",
+                ResourceType = "Appointment",
+                ResourceId   = id.ToString(),
+                Details      = $"Appointment #{id} completed for patient #{appointment.PatientId}"
+            });
 
             return Ok(appointment);
         }
@@ -162,6 +202,15 @@ namespace SHMS.Backend.Controllers
             }
 
             await _hubContext.Clients.All.SendAsync("AppointmentUpdated", id, "Cancelled");
+
+            await _auditService.LogAsync(new AuditLogEntry
+            {
+                PatientId    = appointment.PatientId,
+                Action       = "CANCEL_APPOINTMENT",
+                ResourceType = "Appointment",
+                ResourceId   = id.ToString(),
+                Details      = $"Appointment #{id} cancelled for patient #{appointment.PatientId}"
+            });
 
             return Ok(appointment);
         }

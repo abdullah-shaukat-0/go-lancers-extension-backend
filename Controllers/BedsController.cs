@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using SHMS.Backend.Data;
 using SHMS.Backend.Hubs;
 using SHMS.Backend.Models;
+using SHMS.Backend.Services;
 using System.Threading.Tasks;
 
 namespace SHMS.Backend.Controllers
@@ -16,11 +17,13 @@ namespace SHMS.Backend.Controllers
     {
         private readonly SHMSDbContext _context;
         private readonly IHubContext<HospitalHub> _hubContext;
+        private readonly IAuditService _auditService;
 
-        public BedsController(SHMSDbContext context, IHubContext<HospitalHub> hubContext)
+        public BedsController(SHMSDbContext context, IHubContext<HospitalHub> hubContext, IAuditService auditService)
         {
             _context = context;
             _hubContext = hubContext;
+            _auditService = auditService;
         }
 
         [HttpGet]
@@ -29,6 +32,15 @@ namespace SHMS.Backend.Controllers
             var beds = await _context.Beds
                 .Include(b => b.Patient).ThenInclude(p => p.User)
                 .ToListAsync();
+
+            await _auditService.LogAsync(new AuditLogEntry
+            {
+                Action       = "VIEW_BED_LIST",
+                ResourceType = "Bed",
+                ResourceId   = "all",
+                Details      = $"Retrieved bed list ({beds.Count} beds)"
+            });
+
             return Ok(beds);
         }
 
@@ -46,6 +58,15 @@ namespace SHMS.Backend.Controllers
 
             await _context.SaveChangesAsync();
 
+            await _auditService.LogAsync(new AuditLogEntry
+            {
+                PatientId    = model.PatientId,
+                Action       = "ALLOCATE_BED",
+                ResourceType = "Bed",
+                ResourceId   = id.ToString(),
+                Details      = $"Bed #{id} allocated to patient #{model.PatientId}"
+            });
+
             // Broadcast real-time bed occupancy update
             await _hubContext.Clients.All.SendAsync("BedStatusChanged", bed.Id, true, patient.User.FullName);
 
@@ -62,6 +83,14 @@ namespace SHMS.Backend.Controllers
             bed.PatientId = null;
 
             await _context.SaveChangesAsync();
+
+            await _auditService.LogAsync(new AuditLogEntry
+            {
+                Action       = "RELEASE_BED",
+                ResourceType = "Bed",
+                ResourceId   = id.ToString(),
+                Details      = $"Bed #{id} released (patient discharged)"
+            });
 
             // Broadcast real-time bed release update
             await _hubContext.Clients.All.SendAsync("BedStatusChanged", bed.Id, false, "");

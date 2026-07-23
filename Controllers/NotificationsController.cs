@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using SHMS.Backend.Data;
 using SHMS.Backend.Models;
+using SHMS.Backend.Services;
 using System;
 using System.Linq;
 using System.Threading.Tasks;
@@ -15,10 +16,12 @@ namespace SHMS.Backend.Controllers
     public class NotificationsController : ControllerBase
     {
         private readonly SHMSDbContext _context;
+        private readonly IAuditService _auditService;
 
-        public NotificationsController(SHMSDbContext context)
+        public NotificationsController(SHMSDbContext context, IAuditService auditService)
         {
             _context = context;
+            _auditService = auditService;
         }
 
         // GET /api/notifications/patient/{patientId} — Patient's full inbox
@@ -29,6 +32,15 @@ namespace SHMS.Backend.Controllers
                 .Where(n => n.PatientId == patientId)
                 .OrderByDescending(n => n.SentAt)
                 .ToListAsync();
+
+            await _auditService.LogAsync(new AuditLogEntry
+            {
+                PatientId    = patientId,
+                Action       = "VIEW_NOTIFICATIONS",
+                ResourceType = "PatientNotification",
+                ResourceId   = patientId.ToString(),
+                Details      = $"Viewed notification inbox for patient #{patientId}"
+            });
 
             return Ok(notifications.Select(n => MapToDto(n)));
         }
@@ -103,6 +115,15 @@ namespace SHMS.Backend.Controllers
             _context.PatientNotifications.Add(notification);
             await _context.SaveChangesAsync();
 
+            await _auditService.LogAsync(new AuditLogEntry
+            {
+                PatientId    = dto.PatientId,
+                Action       = "SEND_NOTIFICATION",
+                ResourceType = "PatientNotification",
+                ResourceId   = notification.Id.ToString(),
+                Details      = $"Notification '{dto.Subject}' sent to patient #{dto.PatientId}"
+            });
+
             return Ok(new { Message = "Notification sent successfully.", id = notification.Id });
         }
 
@@ -131,6 +152,15 @@ namespace SHMS.Backend.Controllers
 
             _context.PatientNotifications.Add(notification);
             await _context.SaveChangesAsync();
+
+            await _auditService.LogAsync(new AuditLogEntry
+            {
+                PatientId    = dto.PatientId,
+                Action       = "SCHEDULE_NOTIFICATION",
+                ResourceType = "PatientNotification",
+                ResourceId   = notification.Id.ToString(),
+                Details      = $"Notification '{dto.Subject}' scheduled for patient #{dto.PatientId} at {dto.ScheduledFor}"
+            });
 
             return Ok(new { Message = "Notification scheduled successfully.", id = notification.Id, scheduledFor = dto.ScheduledFor });
         }
