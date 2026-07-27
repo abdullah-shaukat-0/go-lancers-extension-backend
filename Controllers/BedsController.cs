@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using SHMS.Backend.Data;
 using SHMS.Backend.Hubs;
 using SHMS.Backend.Models;
+using System.Linq;
 using System.Threading.Tasks;
 
 namespace SHMS.Backend.Controllers
@@ -27,6 +28,7 @@ namespace SHMS.Backend.Controllers
         public async Task<IActionResult> GetAllBeds()
         {
             var beds = await _context.Beds
+                .OrderBy(b => b.RoomNumber)
                 .Include(b => b.Patient).ThenInclude(p => p.User)
                 .ToListAsync();
             return Ok(beds);

@@ -16,13 +16,18 @@ namespace SHMS.Backend.Controllers
     public class AppointmentsController : ControllerBase
     {
         private readonly SHMSDbContext _context;
+        private readonly Services.IAuditService _auditService;
 
         public Microsoft.AspNetCore.SignalR.IHubContext<SHMS.Backend.Hubs.HospitalHub> _hubContext { get; }
 
-        public AppointmentsController(SHMSDbContext context, Microsoft.AspNetCore.SignalR.IHubContext<SHMS.Backend.Hubs.HospitalHub> hubContext)
+        public AppointmentsController(
+            SHMSDbContext context, 
+            Microsoft.AspNetCore.SignalR.IHubContext<SHMS.Backend.Hubs.HospitalHub> hubContext,
+            Services.IAuditService auditService)
         {
             _context = context;
             _hubContext = hubContext;
+            _auditService = auditService;
         }
 
         [HttpGet]
@@ -40,6 +45,7 @@ namespace SHMS.Backend.Controllers
                 query = query.Where(a => a.DoctorId == doctorId.Value);
 
             var appointments = await query.OrderByDescending(a => a.AppointmentDate).ToListAsync();
+            await _auditService.LogAsync("PHI_READ", "Appointments", patientId?.ToString() ?? "ALL", "Accessed appointments list", "Success");
             return Ok(appointments);
         }
 
@@ -51,7 +57,13 @@ namespace SHMS.Backend.Controllers
                 .Include(a => a.Doctor).ThenInclude(d => d.User)
                 .FirstOrDefaultAsync(a => a.Id == id);
 
-            if (appointment == null) return NotFound(new { Message = "Appointment not found" });
+            if (appointment == null)
+            {
+                await _auditService.LogAsync("PHI_READ", "Appointments", id.ToString(), "Attempted to view appointment details but it was not found", "Failure");
+                return NotFound(new { Message = "Appointment not found" });
+            }
+
+            await _auditService.LogAsync("PHI_READ", "Appointments", id.ToString(), $"Viewed appointment details for patient {appointment.PatientId}", "Success");
             return Ok(appointment);
         }
 
@@ -67,6 +79,7 @@ namespace SHMS.Backend.Controllers
 
             if (conflict)
             {
+                await _auditService.LogAsync("PHI_WRITE", "Appointments", "NEW", $"Failed to book appointment for Doctor {model.DoctorId} at {model.AppointmentDate}: Time Slot Conflict", "Failure");
                 return BadRequest(new { Message = "This slot is already booked and confirmed for this doctor. Please select another date or time." });
             }
 
@@ -99,14 +112,20 @@ namespace SHMS.Backend.Controllers
             // Broadcast real-time booking alert to system dashboards
             await _hubContext.Clients.All.SendAsync("ReceiveMessage", "System", $"New appointment booked for Patient #{model.PatientId}");
 
+            await _auditService.LogAsync("PHI_WRITE", "Appointments", appointment.Id.ToString(), $"Booked new appointment with Doctor {model.DoctorId} on {model.AppointmentDate}", "Success");
             return CreatedAtAction(nameof(GetAppointmentById), new { id = appointment.Id }, appointment);
         }
 
+        [HttpPost("{id}/reschedule")]
         [HttpPut("{id}/reschedule")]
         public async Task<IActionResult> RescheduleAppointment(int id, [FromBody] AppointmentRescheduleModel model)
         {
             var appointment = await _context.Appointments.FindAsync(id);
-            if (appointment == null) return NotFound(new { Message = "Appointment not found" });
+            if (appointment == null)
+            {
+                await _auditService.LogAsync("PHI_WRITE", "Appointments", id.ToString(), "Attempted to reschedule appointment but it was not found", "Failure");
+                return NotFound(new { Message = "Appointment not found" });
+            }
 
             // Check if there is an existing confirmed appointment for the same doctor on the same date/time
             var conflict = await _context.Appointments
@@ -118,20 +137,27 @@ namespace SHMS.Backend.Controllers
 
             if (conflict)
             {
+                await _auditService.LogAsync("PHI_WRITE", "Appointments", id.ToString(), $"Failed to reschedule appointment {id}: Slot Conflict", "Failure");
                 return BadRequest(new { Message = "This slot is already booked and confirmed for this doctor. Please select another date or time." });
             }
 
             appointment.AppointmentDate = model.AppointmentDate;
             await _context.SaveChangesAsync();
 
+            await _auditService.LogAsync("PHI_WRITE", "Appointments", id.ToString(), $"Rescheduled appointment {id} to {model.AppointmentDate}", "Success");
             return Ok(appointment);
         }
 
+        [HttpPost("{id}/complete")]
         [HttpPut("{id}/complete")]
         public async Task<IActionResult> CompleteAppointment(int id, [FromBody] AppointmentCompleteModel model)
         {
             var appointment = await _context.Appointments.FindAsync(id);
-            if (appointment == null) return NotFound(new { Message = "Appointment not found" });
+            if (appointment == null)
+            {
+                await _auditService.LogAsync("PHI_WRITE", "Appointments", id.ToString(), "Attempted to complete appointment but it was not found", "Failure");
+                return NotFound(new { Message = "Appointment not found" });
+            }
 
             appointment.Status = "Completed";
             appointment.Diagnosis = model.Diagnosis ?? appointment.Diagnosis;
@@ -139,14 +165,20 @@ namespace SHMS.Backend.Controllers
 
             await _context.SaveChangesAsync();
 
+            await _auditService.LogAsync("PHI_WRITE", "Appointments", id.ToString(), $"Completed appointment {id} and updated diagnosis/prescription", "Success");
             return Ok(appointment);
         }
 
+        [HttpPost("{id}/cancel")]
         [HttpPut("{id}/cancel")]
         public async Task<IActionResult> CancelAppointment(int id)
         {
             var appointment = await _context.Appointments.FindAsync(id);
-            if (appointment == null) return NotFound(new { Message = "Appointment not found" });
+            if (appointment == null)
+            {
+                await _auditService.LogAsync("PHI_WRITE", "Appointments", id.ToString(), "Attempted to cancel appointment but it was not found", "Failure");
+                return NotFound(new { Message = "Appointment not found" });
+            }
 
             appointment.Status = "Cancelled";
             await _context.SaveChangesAsync();
@@ -159,6 +191,7 @@ namespace SHMS.Backend.Controllers
                 await _context.SaveChangesAsync();
             }
 
+            await _auditService.LogAsync("PHI_WRITE", "Appointments", id.ToString(), $"Cancelled appointment {id} and voided pending bill", "Success");
             return Ok(appointment);
         }
     }

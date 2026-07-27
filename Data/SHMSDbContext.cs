@@ -19,6 +19,7 @@ namespace SHMS.Backend.Data
         public DbSet<Bill> Bills { get; set; }
         public DbSet<CareInstruction> CareInstructions { get; set; }
         public DbSet<PatientNotification> PatientNotifications { get; set; }
+        public DbSet<AuditLog> AuditLogs { get; set; }
 
         protected override void OnModelCreating(ModelBuilder builder)
         {

@@ -34,11 +34,11 @@ namespace SHMS.Backend
             // Configure Identity
             services.AddIdentity<ApplicationUser, IdentityRole>(options =>
             {
-                options.Password.RequireDigit = false;
-                options.Password.RequiredLength = 6;
-                options.Password.RequireNonAlphanumeric = false;
-                options.Password.RequireUppercase = false;
-                options.Password.RequireLowercase = false;
+                options.Password.RequireDigit = true;
+                options.Password.RequiredLength = 8;
+                options.Password.RequireNonAlphanumeric = true;
+                options.Password.RequireUppercase = true;
+                options.Password.RequireLowercase = true;
             })
             .AddEntityFrameworkStores<SHMSDbContext>()
             .AddDefaultTokenProviders();
@@ -54,7 +54,7 @@ namespace SHMS.Backend
             .AddJwtBearer(options =>
             {
                 options.SaveToken = true;
-                options.RequireHttpsMetadata = false;
+                options.RequireHttpsMetadata = true;
                 options.TokenValidationParameters = new TokenValidationParameters()
                 {
                     ValidateIssuer = true,
@@ -64,6 +64,10 @@ namespace SHMS.Backend
                     IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secret))
                 };
             });
+
+            // Register HttpContextAccessor and AuditService
+            services.AddHttpContextAccessor();
+            services.AddScoped<SHMS.Backend.Services.IAuditService, SHMS.Backend.Services.AuditService>();
 
             // Configure CORS
             services.AddCors(options =>

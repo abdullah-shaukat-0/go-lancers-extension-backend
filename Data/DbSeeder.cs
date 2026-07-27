@@ -38,7 +38,7 @@ namespace SHMS.Backend.Data
                     FullName = "Hospital System Administrator",
                     Role = "Admin"
                 };
-                await userManager.CreateAsync(adminUser, "Admin@123");
+                await userManager.CreateAsync(adminUser, "StrongPass123!");
                 await userManager.AddToRoleAsync(adminUser, "Admin");
             }
 
@@ -67,7 +67,7 @@ namespace SHMS.Backend.Data
                         FullName = doc.Name,
                         Role = "Doctor"
                     };
-                    var result = await userManager.CreateAsync(docUser, "Doctor@123");
+                    var result = await userManager.CreateAsync(docUser, "StrongPass123!");
                     if (result.Succeeded)
                     {
                         await userManager.AddToRoleAsync(docUser, "Doctor");
@@ -114,7 +114,7 @@ namespace SHMS.Backend.Data
                         FullName = nur.Name,
                         Role = "Nurse"
                     };
-                    var result = await userManager.CreateAsync(nurUser, "Nurse@123");
+                    var result = await userManager.CreateAsync(nurUser, "StrongPass123!");
                     if (result.Succeeded)
                     {
                         await userManager.AddToRoleAsync(nurUser, "Nurse");
@@ -167,7 +167,7 @@ namespace SHMS.Backend.Data
                         FullName = pat.Name,
                         Role = "Patient"
                     };
-                    var result = await userManager.CreateAsync(patUser, "Patient@123");
+                    var result = await userManager.CreateAsync(patUser, "StrongPass123!");
                     if (result.Succeeded)
                     {
                         await userManager.AddToRoleAsync(patUser, "Patient");

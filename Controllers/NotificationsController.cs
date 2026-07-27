@@ -77,6 +77,43 @@ namespace SHMS.Backend.Controllers
             }));
         }
 
+        // GET /api/notifications/staff-summary — Bell badge + quick summary for doctors/nurses
+        [HttpGet("staff-summary")]
+        [Authorize(Roles = "Doctor,Nurse,Admin")]
+        public async Task<IActionResult> GetStaffSummary([FromQuery] string senderId)
+        {
+            if (string.IsNullOrEmpty(senderId))
+                return BadRequest(new { Message = "senderId is required." });
+
+            // Count = notifications this staff member sent that the patient has NOT yet read
+            var unreadByPatientCount = await _context.PatientNotifications
+                .Where(n => n.SenderId == senderId && !n.IsRead)
+                .CountAsync();
+
+            // Recent items = last 5 sent (no date cutoff)
+            var recentItems = await _context.PatientNotifications
+                .Include(n => n.Patient).ThenInclude(p => p.User)
+                .Where(n => n.SenderId == senderId)
+                .OrderByDescending(n => n.SentAt)
+                .Take(5)
+                .ToListAsync();
+
+            return Ok(new
+            {
+                recentCount = unreadByPatientCount,
+                recent = recentItems.Select(n => new
+                {
+                    id = n.Id,
+                    patientName = n.Patient?.User?.FullName ?? "Unknown",
+                    subject = n.Subject,
+                    notificationType = n.NotificationType,
+                    sentAt = n.SentAt,
+                    scheduledFor = n.ScheduledFor,
+                    isEmailSent = n.IsEmailSent
+                })
+            });
+        }
+
         // POST /api/notifications/send — Doctor or Nurse sends a notification now
         [HttpPost("send")]
         [Authorize(Roles = "Doctor,Nurse,Admin")]
@@ -102,6 +139,16 @@ namespace SHMS.Backend.Controllers
 
             _context.PatientNotifications.Add(notification);
             await _context.SaveChangesAsync();
+
+            // Simulate direct email delivery to the patient for treatments or prescriptions
+            Console.WriteLine($"[EMAIL SERVICE] Sending secure clinical email to patient {patient.User?.Email} regarding {dto.Subject}: \"{dto.Message}\"");
+
+            // Log event to security audit logs (PHIPA requirement)
+            var auditService = HttpContext.RequestServices.GetService(typeof(Services.IAuditService)) as Services.IAuditService;
+            if (auditService != null)
+            {
+                await auditService.LogAsync("PHI_WRITE", "Notifications", notification.Id.ToString(), $"Clinical email notification sent to patient {patient.User?.FullName ?? patient.Id.ToString()} regarding {dto.Subject}", "Success");
+            }
 
             return Ok(new { Message = "Notification sent successfully.", id = notification.Id });
         }

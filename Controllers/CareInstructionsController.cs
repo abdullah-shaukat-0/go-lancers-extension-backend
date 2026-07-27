@@ -15,10 +15,12 @@ namespace SHMS.Backend.Controllers
     public class CareInstructionsController : ControllerBase
     {
         private readonly SHMSDbContext _context;
+        private readonly Services.IAuditService _auditService;
 
-        public CareInstructionsController(SHMSDbContext context)
+        public CareInstructionsController(SHMSDbContext context, Services.IAuditService auditService)
         {
             _context = context;
+            _auditService = auditService;
         }
 
         // GET /api/careinstructions
@@ -33,6 +35,7 @@ namespace SHMS.Backend.Controllers
                 .OrderByDescending(ci => ci.CreatedAt)
                 .ToListAsync();
 
+            await _auditService.LogAsync("PHI_READ", "CareInstructions", "ALL", "Accessed all care instructions list", "Success");
             return Ok(instructions.Select(ci => MapToDto(ci)));
         }
 
@@ -48,6 +51,7 @@ namespace SHMS.Backend.Controllers
                 .OrderByDescending(ci => ci.CreatedAt)
                 .ToListAsync();
 
+            await _auditService.LogAsync("PHI_READ", "CareInstructions", $"Nurse_{nurseId}", $"Accessed care instructions assigned to nurse {nurseId}", "Success");
             return Ok(instructions.Select(ci => MapToDto(ci)));
         }
 
@@ -63,6 +67,7 @@ namespace SHMS.Backend.Controllers
                 .OrderByDescending(ci => ci.CreatedAt)
                 .ToListAsync();
 
+            await _auditService.LogAsync("PHI_READ", "CareInstructions", $"Doctor_{doctorId}", $"Accessed care instructions authored by doctor {doctorId}", "Success");
             return Ok(instructions.Select(ci => MapToDto(ci)));
         }
 
@@ -78,6 +83,7 @@ namespace SHMS.Backend.Controllers
                 .OrderByDescending(ci => ci.CreatedAt)
                 .ToListAsync();
 
+            await _auditService.LogAsync("PHI_READ", "CareInstructions", $"Patient_{patientId}", $"Accessed care instructions related to patient {patientId}", "Success");
             return Ok(instructions.Select(ci => MapToDto(ci)));
         }
 
@@ -91,7 +97,10 @@ namespace SHMS.Backend.Controllers
             var nurse = await _context.Nurses.FindAsync(dto.NurseId);
 
             if (patient == null || doctor == null || nurse == null)
+            {
+                await _auditService.LogAsync("PHI_WRITE", "CareInstructions", "NEW", "Failed to create care instruction: invalid entities", "Failure");
                 return BadRequest(new { Message = "Invalid patient, doctor, or nurse ID." });
+            }
 
             var instruction = new CareInstruction
             {
@@ -116,23 +125,43 @@ namespace SHMS.Backend.Controllers
                 .Include(ci => ci.Nurse).ThenInclude(n => n.User)
                 .FirstOrDefaultAsync(ci => ci.Id == instruction.Id);
 
+            await _auditService.LogAsync("PHI_WRITE", "CareInstructions", instruction.Id.ToString(), $"Created new care instruction for patient {patient.Id}", "Success");
             return Ok(MapToDto(created));
         }
 
         // PUT /api/careinstructions/{id}
+        // Nurses may only update Status and NurseNotes (PHIPA: clinical instructions/priority are doctor-only)
         [HttpPut("{id}")]
         public async Task<IActionResult> Update(int id, [FromBody] CareInstructionUpdateDto dto)
         {
             var instruction = await _context.CareInstructions.FindAsync(id);
-            if (instruction == null) return NotFound();
+            if (instruction == null)
+            {
+                await _auditService.LogAsync("PHI_WRITE", "CareInstructions", id.ToString(), "Attempted to update care instruction but it was not found", "Failure");
+                return NotFound();
+            }
 
-            if (!string.IsNullOrEmpty(dto.Status)) instruction.Status = dto.Status;
-            if (dto.NurseNotes != null) instruction.NurseNotes = dto.NurseNotes;
-            if (!string.IsNullOrEmpty(dto.Priority)) instruction.Priority = dto.Priority;
-            if (!string.IsNullOrEmpty(dto.Instructions)) instruction.Instructions = dto.Instructions;
+            var role = User.FindFirst(System.Security.Claims.ClaimTypes.Role)?.Value ?? "";
+            var isNurse = role.Equals("Nurse", StringComparison.OrdinalIgnoreCase);
+
+            // PHIPA compliance: Nurses can ONLY update their own notes and status
+            if (isNurse)
+            {
+                if (dto.NurseNotes != null) instruction.NurseNotes = dto.NurseNotes;
+                if (!string.IsNullOrEmpty(dto.Status)) instruction.Status = dto.Status;
+            }
+            else
+            {
+                // Doctors and Admins can update all fields
+                if (!string.IsNullOrEmpty(dto.Status)) instruction.Status = dto.Status;
+                if (dto.NurseNotes != null) instruction.NurseNotes = dto.NurseNotes;
+                if (!string.IsNullOrEmpty(dto.Priority)) instruction.Priority = dto.Priority;
+                if (!string.IsNullOrEmpty(dto.Instructions)) instruction.Instructions = dto.Instructions;
+            }
             instruction.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
+            await _auditService.LogAsync("PHI_WRITE", "CareInstructions", id.ToString(), $"Updated care instruction {id} status/notes", "Success");
             return Ok(new { Message = "Updated successfully." });
         }
 
@@ -142,10 +171,15 @@ namespace SHMS.Backend.Controllers
         public async Task<IActionResult> Delete(int id)
         {
             var instruction = await _context.CareInstructions.FindAsync(id);
-            if (instruction == null) return NotFound();
+            if (instruction == null)
+            {
+                await _auditService.LogAsync("PHI_WRITE", "CareInstructions", id.ToString(), "Attempted to delete care instruction but it was not found", "Failure");
+                return NotFound();
+            }
 
             _context.CareInstructions.Remove(instruction);
             await _context.SaveChangesAsync();
+            await _auditService.LogAsync("PHI_WRITE", "CareInstructions", id.ToString(), $"Deleted care instruction {id}", "Success");
             return Ok(new { Message = "Deleted successfully." });
         }
 

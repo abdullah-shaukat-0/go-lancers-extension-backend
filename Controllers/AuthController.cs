@@ -21,28 +21,37 @@ namespace SHMS.Backend.Controllers
         private readonly RoleManager<IdentityRole> _roleManager;
         private readonly SHMSDbContext _context;
         private readonly IConfiguration _configuration;
+        private readonly Services.IAuditService _auditService;
 
         public AuthController(
             UserManager<ApplicationUser> userManager,
             RoleManager<IdentityRole> roleManager,
             SHMSDbContext context,
-            IConfiguration configuration)
+            IConfiguration configuration,
+            Services.IAuditService auditService)
         {
             _userManager = userManager;
             _roleManager = roleManager;
             _context = context;
             _configuration = configuration;
+            _auditService = auditService;
         }
 
         [HttpPost("register")]
         public async Task<IActionResult> Register([FromBody] RegisterModel model)
         {
             if (!ModelState.IsValid)
+            {
+                await _auditService.LogAnonymousAsync(model.Username, "REGISTRATION_ATTEMPT", "Model validation failed", "Failure", HttpContext.Connection.RemoteIpAddress?.ToString());
                 return BadRequest(ModelState);
+            }
 
             var userExists = await _userManager.FindByNameAsync(model.Username);
             if (userExists != null)
+            {
+                await _auditService.LogAnonymousAsync(model.Username, "REGISTRATION_FAILURE", "User already exists", "Failure", HttpContext.Connection.RemoteIpAddress?.ToString());
                 return BadRequest(new { Message = "User already exists!" });
+            }
 
             ApplicationUser user = new ApplicationUser()
             {
@@ -117,63 +126,115 @@ namespace SHMS.Backend.Controllers
             var user = await _userManager.FindByNameAsync(model.Username);
             if (user != null && await _userManager.CheckPasswordAsync(user, model.Password))
             {
-                var userRoles = await _userManager.GetRolesAsync(user);
+                // Generate secure 6-digit verification code
+                var random = new Random();
+                var mfaCode = random.Next(100000, 999999).ToString();
+                
+                user.MfaCode = mfaCode;
+                user.MfaExpiry = DateTime.UtcNow.AddMinutes(3); // Code expires in 3 minutes
+                await _userManager.UpdateAsync(user);
 
-                var authClaims = new[]
-                {
-                    new Claim(ClaimTypes.Name, user.UserName),
-                    new Claim(ClaimTypes.NameIdentifier, user.Id),
-                    new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
-                    new Claim("fullName", user.FullName ?? ""),
-                    new Claim(ClaimTypes.Role, user.Role ?? "Patient")
-                };
+                // Log the MFA generation event
+                await _auditService.LogAnonymousAsync(user.UserName, "MFA_CODE_GENERATED", $"MFA Code generated for user. Code: {mfaCode}", "Success", HttpContext.Connection.RemoteIpAddress?.ToString());
 
-                var claimsIdentity = new ClaimsIdentity(authClaims);
-                foreach (var role in userRoles)
-                {
-                    claimsIdentity.AddClaim(new Claim(ClaimTypes.Role, role));
-                }
-
-                var authSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_configuration["JWT:Secret"] ?? "SuperSecretSecurityKeyThatIsLongEnough"));
-
-                var token = new JwtSecurityToken(
-                    issuer: _configuration["JWT:ValidIssuer"] ?? "http://localhost:5000",
-                    audience: _configuration["JWT:ValidAudience"] ?? "http://localhost:5000",
-                    expires: DateTime.Now.AddHours(3),
-                    claims: claimsIdentity.Claims,
-                    signingCredentials: new SigningCredentials(authSigningKey, SecurityAlgorithms.HmacSha256)
-                );
-
-                int profileId = 0;
-                if (user.Role == "Patient")
-                {
-                    var p = await _context.Patients.FirstOrDefaultAsync(x => x.UserId == user.Id);
-                    if (p != null) profileId = p.Id;
-                }
-                else if (user.Role == "Doctor")
-                {
-                    var d = await _context.Doctors.FirstOrDefaultAsync(x => x.UserId == user.Id);
-                    if (d != null) profileId = d.Id;
-                }
-                else if (user.Role == "Nurse")
-                {
-                    var n = await _context.Nurses.FirstOrDefaultAsync(x => x.UserId == user.Id);
-                    if (n != null) profileId = n.Id;
-                }
+                // Simulated Email Dispatch for Ontario compliance (printing to console/debug logs)
+                Console.WriteLine($"[EMAIL SERVICE] Sending secure MFA verification code to patient/staff email {user.Email}. Code: {mfaCode}");
 
                 return Ok(new
                 {
-                    token = new JwtSecurityTokenHandler().WriteToken(token),
-                    expiration = token.ValidTo,
+                    mfaRequired = true,
                     username = user.UserName,
-                    fullName = user.FullName,
-                    role = user.Role,
-                    userId = user.Id,
-                    profileId = profileId
+                    message = "Verification code dispatched to your registered email."
                 });
             }
+            await _auditService.LogAnonymousAsync(model.Username, "LOGIN_FAILURE", "Invalid username or password credentials", "Failure", HttpContext.Connection.RemoteIpAddress?.ToString());
             return Unauthorized(new { Message = "Invalid username or password" });
         }
+
+        [HttpPost("verify-mfa")]
+        public async Task<IActionResult> VerifyMfa([FromBody] MfaVerifyModel model)
+        {
+            var user = await _userManager.FindByNameAsync(model.Username);
+            if (user == null)
+            {
+                await _auditService.LogAnonymousAsync(model.Username, "MFA_VERIFICATION_FAILURE", "User not found during verification", "Failure", HttpContext.Connection.RemoteIpAddress?.ToString());
+                return BadRequest(new { Message = "Invalid user" });
+            }
+
+            if (user.MfaCode == null || user.MfaExpiry < DateTime.UtcNow || user.MfaCode != model.Code)
+            {
+                await _auditService.LogAnonymousAsync(user.UserName, "MFA_VERIFICATION_FAILURE", "Invalid or expired MFA code supplied", "Failure", HttpContext.Connection.RemoteIpAddress?.ToString());
+                return BadRequest(new { Message = "Invalid or expired verification code." });
+            }
+
+            // Clear used MFA code
+            user.MfaCode = null;
+            user.MfaExpiry = null;
+            await _userManager.UpdateAsync(user);
+
+            var userRoles = await _userManager.GetRolesAsync(user);
+
+            var authClaims = new[]
+            {
+                new Claim(ClaimTypes.Name, user.UserName),
+                new Claim(ClaimTypes.NameIdentifier, user.Id),
+                new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
+                new Claim("fullName", user.FullName ?? ""),
+                new Claim(ClaimTypes.Role, user.Role ?? "Patient")
+            };
+
+            var claimsIdentity = new ClaimsIdentity(authClaims);
+            foreach (var role in userRoles)
+            {
+                claimsIdentity.AddClaim(new Claim(ClaimTypes.Role, role));
+            }
+
+            var authSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_configuration["JWT:Secret"] ?? "SuperSecretSecurityKeyThatIsLongEnough"));
+
+            var token = new JwtSecurityToken(
+                issuer: _configuration["JWT:ValidIssuer"] ?? "http://localhost:5000",
+                audience: _configuration["JWT:ValidAudience"] ?? "http://localhost:5000",
+                expires: DateTime.Now.AddHours(1),
+                claims: claimsIdentity.Claims,
+                signingCredentials: new SigningCredentials(authSigningKey, SecurityAlgorithms.HmacSha256)
+            );
+
+            int profileId = 0;
+            if (user.Role == "Patient")
+            {
+                var p = await _context.Patients.FirstOrDefaultAsync(x => x.UserId == user.Id);
+                if (p != null) profileId = p.Id;
+            }
+            else if (user.Role == "Doctor")
+            {
+                var d = await _context.Doctors.FirstOrDefaultAsync(x => x.UserId == user.Id);
+                if (d != null) profileId = d.Id;
+            }
+            else if (user.Role == "Nurse")
+            {
+                var n = await _context.Nurses.FirstOrDefaultAsync(x => x.UserId == user.Id);
+                if (n != null) profileId = n.Id;
+            }
+
+            await _auditService.LogAnonymousAsync(user.UserName, "LOGIN_SUCCESS", $"User {user.UserName} completed MFA and logged in successfully", "Success", HttpContext.Connection.RemoteIpAddress?.ToString());
+
+            return Ok(new
+            {
+                token = new JwtSecurityTokenHandler().WriteToken(token),
+                expiration = token.ValidTo,
+                username = user.UserName,
+                fullName = user.FullName,
+                role = user.Role,
+                userId = user.Id,
+                profileId = profileId
+            });
+        }
+    }
+
+    public class MfaVerifyModel
+    {
+        public string Username { get; set; }
+        public string Code { get; set; }
     }
 
     public class LoginModel
