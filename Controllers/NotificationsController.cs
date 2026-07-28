@@ -197,6 +197,55 @@ namespace SHMS.Backend.Controllers
         }
     }
 
+    // POST /api/notifications/send-appointment-reminders
+[HttpPost("send-appointment-reminders")]
+[Authorize(Roles = "Admin")]
+public async Task<IActionResult> SendAppointmentReminders()
+{
+    var now = DateTime.UtcNow;
+
+    // Find appointments occurring within the next 24 hours
+    var appointments = await _context.Appointments
+        .Include(a => a.Patient)
+        .ThenInclude(p => p.User)
+        .Where(a =>
+            !a.ReminderSent &&
+            a.AppointmentDate >= now &&
+            a.AppointmentDate <= now.AddHours(24))
+        .ToListAsync();
+
+    foreach (var appointment in appointments)
+    {
+        var notification = new PatientNotification
+        {
+            PatientId = appointment.PatientId,
+            SenderId = "SYSTEM",
+            SenderName = "System",
+            SenderRole = "System",
+            Subject = "Appointment Reminder",
+            Message =
+                $"Reminder: You have an appointment scheduled for {appointment.AppointmentDate:MMMM dd, yyyy hh:mm tt}.",
+            NotificationType = "Appointment",
+            IsRead = false,
+            SentAt = DateTime.UtcNow,
+            ScheduledFor = null,
+            IsEmailSent = false // Set to true after sending an email
+        };
+
+        _context.PatientNotifications.Add(notification);
+
+        // Prevent duplicate reminders
+        appointment.ReminderSent = true;
+    }
+
+    await _context.SaveChangesAsync();
+
+    return Ok(new
+    {
+        message = $"Sent {appointments.Count} appointment reminder(s)."
+    });
+}
+
     public class SendNotificationDto
     {
         public int PatientId { get; set; }
