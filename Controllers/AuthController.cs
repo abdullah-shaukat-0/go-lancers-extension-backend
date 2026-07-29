@@ -7,6 +7,7 @@ using SHMS.Backend.Data;
 using SHMS.Backend.Models;
 using SHMS.Backend.Services;
 using System;
+using System.Collections.Concurrent;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
@@ -18,6 +19,8 @@ namespace SHMS.Backend.Controllers
     [ApiController]
     public class AuthController : ControllerBase
     {
+        private static readonly ConcurrentDictionary<string, PendingMfaLogin> PendingMfaLogins = new ConcurrentDictionary<string, PendingMfaLogin>();
+
         private readonly UserManager<ApplicationUser> _userManager;
         private readonly RoleManager<IdentityRole> _roleManager;
         private readonly SHMSDbContext _context;
@@ -136,52 +139,147 @@ namespace SHMS.Backend.Controllers
         public async Task<IActionResult> Login([FromBody] LoginModel model)
         {
             var user = await _userManager.FindByNameAsync(model.Username);
-            if (user != null && await _userManager.CheckPasswordAsync(user, model.Password))
+            if (user == null || !await _userManager.CheckPasswordAsync(user, model.Password))
             {
-                // Generate secure 6-digit verification code
-                var random = new Random();
-                var mfaCode = random.Next(100000, 999999).ToString();
-                
-                user.MfaCode = mfaCode;
-                user.MfaExpiry = DateTime.UtcNow.AddMinutes(3); // Code expires in 3 minutes
-                await _userManager.UpdateAsync(user);
-
-                // Log the MFA generation event
-                await _auditService.LogAnonymousAsync(user.UserName, "MFA_CODE_GENERATED", $"MFA Code generated for user. Code: {mfaCode}", "Success", HttpContext.Connection.RemoteIpAddress?.ToString());
-
-                // Simulated Email Dispatch for Ontario compliance (printing to console/debug logs)
-                Console.WriteLine($"[EMAIL SERVICE] Sending secure MFA verification code to patient/staff email {user.Email}. Code: {mfaCode}");
-
-                await _auditService.LogAsync(new AuditLogEntry
-                {
-                    Action           = "LOGIN",
-                    ResourceType     = "User",
-                    ResourceId       = user.Id,
-                    Details          = $"User '{user.UserName}' ({user.Role}) logged in successfully",
-                    OverrideUserId   = user.Id,
-                    OverrideUserName = user.UserName,
-                    OverrideUserRole = user.Role
-                });
-
-                return Ok(new
-                {
-                    mfaRequired = true,
-                    username = user.UserName,
-                    message = "Verification code dispatched to your registered email."
-                });
+                return Unauthorized(new { Message = "Invalid username or password" });
             }
 
-            await _auditService.LogAsync(new AuditLogEntry
+            if (string.IsNullOrWhiteSpace(user.Email))
             {
-                Action           = "LOGIN_FAILED",
-                ResourceType     = "User",
-                ResourceId       = model.Username,
-                Details          = $"Failed login attempt for username: {model.Username}",
-                WasSuccessful    = false,
-                OverrideUserName = model.Username
-            });
+                return BadRequest(new { Message = "User email is required to complete MFA flow." });
+            }
 
-            return Unauthorized(new { Message = "Invalid username or password" });
+            var mfaCode = await _userManager.GenerateTwoFactorTokenAsync(user, "Email");
+            var verificationToken = Guid.NewGuid().ToString("N");
+            var expiresAt = DateTime.UtcNow.AddMinutes(5);
+
+            PendingMfaLogins[verificationToken] = new PendingMfaLogin
+            {
+                UserId = user.Id,
+                ExpiresAt = expiresAt,
+                Code = mfaCode
+            };
+
+            Console.WriteLine($"[MFA] Generated token for {user.Email}: {mfaCode}");
+
+            var profileId = await GetProfileIdAsync(user);
+
+            return Ok(new
+            {
+                status = "MfaRequired",
+                requiresMfa = true,
+                verificationToken,
+                expiresAt,
+                message = "MFA code generated. For now the token is printed to the server console instead of being emailed.",
+                username = user.UserName,
+                fullName = user.FullName,
+                role = user.Role,
+                userId = user.Id,
+                profileId = profileId
+            });
+        }
+
+        [HttpPost("verify-mfa")]
+        public async Task<IActionResult> VerifyMfa([FromBody] VerifyMfaModel model)
+        {
+            if (string.IsNullOrWhiteSpace(model.VerificationToken) || string.IsNullOrWhiteSpace(model.Code))
+            {
+                return BadRequest(new { Message = "Verification token and MFA code are required." });
+            }
+
+            if (!PendingMfaLogins.TryGetValue(model.VerificationToken, out var pendingMfaLogin))
+            {
+                return Unauthorized(new { Message = "Invalid or expired MFA verification token." });
+            }
+
+            if (pendingMfaLogin.ExpiresAt < DateTime.UtcNow)
+            {
+                PendingMfaLogins.TryRemove(model.VerificationToken, out _);
+                return Unauthorized(new { Message = "MFA verification token has expired." });
+            }
+
+            var user = await _userManager.FindByIdAsync(pendingMfaLogin.UserId);
+            if (user == null)
+            {
+                PendingMfaLogins.TryRemove(model.VerificationToken, out _);
+                return Unauthorized(new { Message = "User could not be found for MFA verification." });
+            }
+
+            var isMfaValid = await _userManager.VerifyTwoFactorTokenAsync(user, "Email", model.Code);
+            if (!isMfaValid)
+            {
+                PendingMfaLogins.TryRemove(model.VerificationToken, out _);
+                return Unauthorized(new { Message = "Invalid MFA code." });
+            }
+
+            PendingMfaLogins.TryRemove(model.VerificationToken, out _);
+            var jwtResponse = await BuildJwtResponseAsync(user);
+            return Ok(jwtResponse);
+        }
+
+        private async Task<object> BuildJwtResponseAsync(ApplicationUser user)
+        {
+            var userRoles = await _userManager.GetRolesAsync(user);
+
+            var authClaims = new[]
+            {
+                new Claim(ClaimTypes.Name, user.UserName),
+                new Claim(ClaimTypes.NameIdentifier, user.Id),
+                new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
+                new Claim("fullName", user.FullName ?? ""),
+                new Claim(ClaimTypes.Role, user.Role ?? "Patient")
+            };
+
+            var claimsIdentity = new ClaimsIdentity(authClaims);
+            foreach (var role in userRoles)
+            {
+                claimsIdentity.AddClaim(new Claim(ClaimTypes.Role, role));
+            }
+
+            var authSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_configuration["JWT:Secret"] ?? "SuperSecretSecurityKeyThatIsLongEnough"));
+
+            var token = new JwtSecurityToken(
+                issuer: _configuration["JWT:ValidIssuer"] ?? "http://localhost:5000",
+                audience: _configuration["JWT:ValidAudience"] ?? "http://localhost:5000",
+                expires: DateTime.Now.AddHours(3),
+                claims: claimsIdentity.Claims,
+                signingCredentials: new SigningCredentials(authSigningKey, SecurityAlgorithms.HmacSha256)
+            );
+
+            var profileId = await GetProfileIdAsync(user);
+
+            return new
+            {
+                token = new JwtSecurityTokenHandler().WriteToken(token),
+                expiration = token.ValidTo,
+                username = user.UserName,
+                fullName = user.FullName,
+                role = user.Role,
+                userId = user.Id,
+                profileId = profileId
+            };
+        }
+
+        private async Task<int> GetProfileIdAsync(ApplicationUser user)
+        {
+            int profileId = 0;
+            if (user.Role == "Patient")
+            {
+                var p = await _context.Patients.FirstOrDefaultAsync(x => x.UserId == user.Id);
+                if (p != null) profileId = p.Id;
+            }
+            else if (user.Role == "Doctor")
+            {
+                var d = await _context.Doctors.FirstOrDefaultAsync(x => x.UserId == user.Id);
+                if (d != null) profileId = d.Id;
+            }
+            else if (user.Role == "Nurse")
+            {
+                var n = await _context.Nurses.FirstOrDefaultAsync(x => x.UserId == user.Id);
+                if (n != null) profileId = n.Id;
+            }
+
+            return profileId;
         }
 
         [HttpPost("verify-mfa")]
@@ -283,7 +381,7 @@ namespace SHMS.Backend.Controllers
         public string Password { get; set; }
         public string FullName { get; set; }
         public string Role { get; set; } // Admin, Doctor, Nurse, Patient
-        
+
         public string BloodGroup { get; set; }
         public string Gender { get; set; }
         public DateTime? DateOfBirth { get; set; }
@@ -294,5 +392,18 @@ namespace SHMS.Backend.Controllers
         // Nurse-specific
         public string Department { get; set; }
         public string Shift { get; set; }
+    }
+
+    public class VerifyMfaModel
+    {
+        public string VerificationToken { get; set; }
+        public string Code { get; set; }
+    }
+
+    public class PendingMfaLogin
+    {
+        public string UserId { get; set; }
+        public string Code { get; set; }
+        public DateTime ExpiresAt { get; set; }
     }
 }
