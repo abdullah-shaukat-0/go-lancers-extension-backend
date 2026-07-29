@@ -17,9 +17,12 @@ namespace SHMS.Backend.Data
         public DbSet<Bed> Beds { get; set; }
         public DbSet<InventoryItem> InventoryItems { get; set; }
         public DbSet<Bill> Bills { get; set; }
+        public DbSet<BillItem> BillItems { get; set; }
+        public DbSet<HospitalService> HospitalServices { get; set; }
+        public DbSet<Expense> Expenses { get; set; }
         public DbSet<CareInstruction> CareInstructions { get; set; }
         public DbSet<PatientNotification> PatientNotifications { get; set; }
-        public DbSet<AuditLog> AuditLogs { get; set; }
+        public DbSet<PatientCorrectionRequest> PatientCorrectionRequests { get; set; }
 
         protected override void OnModelCreating(ModelBuilder builder)
         {
@@ -73,6 +76,24 @@ namespace SHMS.Backend.Data
                 .HasForeignKey(b => b.PatientId)
                 .OnDelete(DeleteBehavior.Restrict);
 
+            builder.Entity<Bill>()
+                .HasOne(b => b.Appointment)
+                .WithMany()
+                .HasForeignKey(b => b.AppointmentId)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            builder.Entity<BillItem>()
+                .HasOne(bi => bi.Bill)
+                .WithMany(b => b.Items)
+                .HasForeignKey(bi => bi.BillId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            builder.Entity<BillItem>()
+                .HasOne(bi => bi.HospitalService)
+                .WithMany(hs => hs.BillItems)
+                .HasForeignKey(bi => bi.HospitalServiceId)
+                .OnDelete(DeleteBehavior.SetNull);
+
             // CareInstruction
             builder.Entity<CareInstruction>()
                 .HasOne(ci => ci.Patient)
@@ -98,6 +119,19 @@ namespace SHMS.Backend.Data
                 .WithMany()
                 .HasForeignKey(pn => pn.PatientId)
                 .OnDelete(DeleteBehavior.Cascade);
+
+            // PatientCorrectionRequest
+            builder.Entity<PatientCorrectionRequest>()
+                .HasOne(pcr => pcr.Patient)
+                .WithMany()
+                .HasForeignKey(pcr => pcr.PatientId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            builder.Entity<PatientCorrectionRequest>()
+                .HasOne(pcr => pcr.ReviewedByUser)
+                .WithMany()
+                .HasForeignKey(pcr => pcr.ReviewedByUserId)
+                .OnDelete(DeleteBehavior.SetNull);
         }
     }
 }

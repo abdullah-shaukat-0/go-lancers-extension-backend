@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using SHMS.Backend.Data;
 using SHMS.Backend.Models;
+using System.Security.Claims;
 using System.Threading.Tasks;
 
 namespace SHMS.Backend.Controllers
@@ -22,6 +23,7 @@ namespace SHMS.Backend.Controllers
         }
 
         [HttpGet]
+        [Authorize(Roles = "Admin,Doctor,Nurse")]
         public async Task<IActionResult> GetAllPatients()
         {
             var patients = await _context.Patients
@@ -38,18 +40,15 @@ namespace SHMS.Backend.Controllers
                 .Include(p => p.User)
                 .FirstOrDefaultAsync(p => p.Id == id);
 
-            if (patient == null)
-            {
-                await _auditService.LogAsync("PHI_READ", "Patients", id.ToString(), $"Attempted to access patient details but patient was not found", "Failure");
-                return NotFound(new { Message = "Patient not found" });
-            }
+            if (patient == null) return NotFound(new { Message = "Patient not found" });
+            if (User.IsInRole("Patient") && patient.UserId != User.FindFirstValue(ClaimTypes.NameIdentifier))
+                return Forbid();
 
-            await _auditService.LogAsync("PHI_READ", "Patients", id.ToString(), $"Accessed details of patient {patient.User?.FullName ?? id.ToString()}", "Success");
             return Ok(patient);
         }
 
         [HttpPut("{id}")]
-        [Authorize(Roles = "Admin,Doctor")] // PHIPA: Nurses have read-only access to patient medical records
+        [Authorize(Roles = "Admin,Doctor")]
         public async Task<IActionResult> UpdatePatient(int id, [FromBody] PatientUpdateModel model)
         {
             var patient = await _context.Patients.Include(p => p.User).FirstOrDefaultAsync(p => p.Id == id);

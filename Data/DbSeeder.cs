@@ -230,6 +230,16 @@ namespace SHMS.Backend.Data
                 await context.SaveChangesAsync();
             }
 
+            if (!context.HospitalServices.Any())
+            {
+                context.HospitalServices.Add(new HospitalService { Name = "Consultation", Category = "Appointment", Price = 100.00m, IsActive = true });
+                context.HospitalServices.Add(new HospitalService { Name = "Follow-up Consultation", Category = "Appointment", Price = 60.00m, IsActive = true });
+                context.HospitalServices.Add(new HospitalService { Name = "Blood Test", Category = "Lab", Price = 35.00m, IsActive = true });
+                context.HospitalServices.Add(new HospitalService { Name = "X-Ray", Category = "Radiology", Price = 80.00m, IsActive = true });
+                context.HospitalServices.Add(new HospitalService { Name = "Emergency Care", Category = "Emergency", Price = 250.00m, IsActive = true });
+                await context.SaveChangesAsync();
+            }
+
             // 8. Seed Sample Appointments and Bills
             if (!context.Appointments.Any() && doctorEntities.Count >= 2 && patientEntities.Count >= 3)
             {
@@ -295,12 +305,50 @@ namespace SHMS.Backend.Data
 
                 await context.SaveChangesAsync();
 
-                context.Bills.Add(new Bill { PatientId = patientEntities[0].Id, AppointmentId = app1.Id, Amount = 100.00m, PaymentStatus = "Paid", DateGenerated = DateTime.Now.AddDays(-5) });
-                context.Bills.Add(new Bill { PatientId = patientEntities[1].Id, AppointmentId = app2.Id, Amount = 100.00m, PaymentStatus = "Paid", DateGenerated = DateTime.Now.AddDays(-3) });
-                context.Bills.Add(new Bill { PatientId = patientEntities[2].Id, AppointmentId = app3.Id, Amount = 100.00m, PaymentStatus = "Pending", DateGenerated = DateTime.Now.AddDays(2) });
-                context.Bills.Add(new Bill { PatientId = patientEntities[4].Id, AppointmentId = app4.Id, Amount = 100.00m, PaymentStatus = "Pending", DateGenerated = DateTime.Now.AddDays(3) });
-                context.Bills.Add(new Bill { PatientId = patientEntities[5].Id, AppointmentId = app5.Id, Amount = 100.00m, PaymentStatus = "Pending", DateGenerated = DateTime.Now.AddHours(18) });
-                context.Bills.Add(new Bill { PatientId = patientEntities[0].Id, AppointmentId = null, Amount = 350.00m, PaymentStatus = "Paid", DateGenerated = DateTime.Now.AddDays(-2) });
+                var consultation = await context.HospitalServices.FirstAsync(s => s.Name == "Consultation");
+
+                var seededBills = new List<Bill>
+                {
+                    CreateSeedBill(patientEntities[0].Id, app1.Id, consultation, "Paid", DateTime.Now.AddDays(-5), "INV-SEED-00001"),
+                    CreateSeedBill(patientEntities[1].Id, app2.Id, consultation, "Paid", DateTime.Now.AddDays(-3), "INV-SEED-00002"),
+                    CreateSeedBill(patientEntities[2].Id, app3.Id, consultation, "Pending", DateTime.Now.AddDays(2), "INV-SEED-00003"),
+                    CreateSeedBill(patientEntities[4].Id, app4.Id, consultation, "Pending", DateTime.Now.AddDays(3), "INV-SEED-00004"),
+                    CreateSeedBill(patientEntities[5].Id, app5.Id, consultation, "Pending", DateTime.Now.AddHours(18), "INV-SEED-00005"),
+                    new Bill
+                    {
+                        PatientId = patientEntities[0].Id,
+                        AppointmentId = null,
+                        InvoiceNumber = "INV-SEED-00006",
+                        Subtotal = 350.00m,
+                        DiscountAmount = 0,
+                        TaxAmount = 0,
+                        Amount = 350.00m,
+                        PaymentStatus = "Paid",
+                        DateGenerated = DateTime.Now.AddDays(-2),
+                        DatePaid = DateTime.Now.AddDays(-2),
+                        Notes = "Manual seed invoice",
+                        Items = new List<BillItem>
+                        {
+                            new BillItem
+                            {
+                                Description = "Manual hospital service",
+                                Quantity = 1,
+                                UnitPrice = 350.00m,
+                                LineTotal = 350.00m
+                            }
+                        }
+                    }
+                };
+
+                context.Bills.AddRange(seededBills);
+                await context.SaveChangesAsync();
+            }
+
+            if (!context.Expenses.Any())
+            {
+                context.Expenses.Add(new Expense { Title = "Medical supplies restock", Category = "Inventory", Amount = 420.00m, ExpenseDate = DateTime.Now.AddDays(-7), Notes = "Basic consumables", CreatedAt = DateTime.Now.AddDays(-7) });
+                context.Expenses.Add(new Expense { Title = "Ward equipment maintenance", Category = "Maintenance", Amount = 180.00m, ExpenseDate = DateTime.Now.AddDays(-4), Notes = "Routine equipment service", CreatedAt = DateTime.Now.AddDays(-4) });
+                context.Expenses.Add(new Expense { Title = "Cleaning services", Category = "Operations", Amount = 95.00m, ExpenseDate = DateTime.Now.AddDays(-1), Notes = "Daily cleaning support", CreatedAt = DateTime.Now.AddDays(-1) });
                 await context.SaveChangesAsync();
             }
 
@@ -469,6 +517,35 @@ namespace SHMS.Backend.Data
 
                 await context.SaveChangesAsync();
             }
+        }
+
+        private static Bill CreateSeedBill(int patientId, int appointmentId, HospitalService service, string status, DateTime dateGenerated, string invoiceNumber)
+        {
+            return new Bill
+            {
+                PatientId = patientId,
+                AppointmentId = appointmentId,
+                InvoiceNumber = invoiceNumber,
+                Subtotal = service.Price,
+                DiscountAmount = 0,
+                TaxAmount = 0,
+                Amount = service.Price,
+                PaymentStatus = status,
+                DateGenerated = dateGenerated,
+                DatePaid = status == "Paid" ? dateGenerated : (DateTime?)null,
+                Notes = "Seed appointment invoice",
+                Items = new List<BillItem>
+                {
+                    new BillItem
+                    {
+                        HospitalServiceId = service.Id,
+                        Description = service.Name,
+                        Quantity = 1,
+                        UnitPrice = service.Price,
+                        LineTotal = service.Price
+                    }
+                }
+            };
         }
     }
 }

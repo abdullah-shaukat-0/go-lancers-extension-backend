@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using SHMS.Backend.Data;
 using SHMS.Backend.Models;
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 
@@ -14,6 +15,10 @@ namespace SHMS.Backend.Controllers
     [Authorize]
     public class BillingController : ControllerBase
     {
+        private const string PendingStatus = "Pending";
+        private const string PaidStatus = "Paid";
+        private const string CancelledStatus = "Cancelled";
+
         private readonly SHMSDbContext _context;
         private readonly Services.IAuditService _auditService;
 
@@ -24,18 +29,49 @@ namespace SHMS.Backend.Controllers
         }
 
         [HttpGet]
-        public async Task<IActionResult> GetAllBills(int? patientId)
+        public async Task<IActionResult> GetAllBills(int? patientId, string status)
         {
             var query = _context.Bills
                 .Include(b => b.Patient).ThenInclude(p => p.User)
                 .Include(b => b.Appointment).ThenInclude(a => a.Doctor).ThenInclude(d => d.User)
+                .Include(b => b.Items).ThenInclude(i => i.HospitalService)
                 .AsQueryable();
 
             if (patientId.HasValue)
                 query = query.Where(b => b.PatientId == patientId.Value);
 
+            if (!string.IsNullOrWhiteSpace(status))
+                query = query.Where(b => b.PaymentStatus == status);
+
             var bills = await query.OrderByDescending(b => b.DateGenerated).ToListAsync();
             await _auditService.LogAsync("PHI_READ", "Billing", patientId?.ToString() ?? "ALL", "Accessed billing records", "Success");
+            return Ok(bills);
+        }
+
+        [HttpGet("{id}")]
+        public async Task<IActionResult> GetBillById(int id)
+        {
+            var bill = await _context.Bills
+                .Include(b => b.Patient).ThenInclude(p => p.User)
+                .Include(b => b.Appointment).ThenInclude(a => a.Doctor).ThenInclude(d => d.User)
+                .Include(b => b.Items).ThenInclude(i => i.HospitalService)
+                .FirstOrDefaultAsync(b => b.Id == id);
+
+            if (bill == null) return NotFound(new { Message = "Invoice not found" });
+            return Ok(bill);
+        }
+
+        [HttpGet("patient/{patientId}")]
+        public async Task<IActionResult> GetBillsByPatient(int patientId)
+        {
+            var bills = await _context.Bills
+                .Include(b => b.Patient).ThenInclude(p => p.User)
+                .Include(b => b.Appointment).ThenInclude(a => a.Doctor).ThenInclude(d => d.User)
+                .Include(b => b.Items).ThenInclude(i => i.HospitalService)
+                .Where(b => b.PatientId == patientId)
+                .OrderByDescending(b => b.DateGenerated)
+                .ToListAsync();
+
             return Ok(bills);
         }
 
@@ -43,25 +79,115 @@ namespace SHMS.Backend.Controllers
         [Authorize(Roles = "Admin,Doctor")] // PHIPA: Nurses have read-only access to billing records
         public async Task<IActionResult> GenerateManualBill([FromBody] ManualBillModel model)
         {
+            if (model == null || model.PatientId <= 0 || model.Amount <= 0)
+                return BadRequest(new { Message = "PatientId and a positive Amount are required." });
+
+            var patientExists = await _context.Patients.AnyAsync(p => p.Id == model.PatientId);
+            if (!patientExists) return NotFound(new { Message = "Patient not found" });
+
             var bill = new Bill
             {
                 PatientId = model.PatientId,
                 AppointmentId = null,
+                InvoiceNumber = await GenerateInvoiceNumberAsync(),
+                Subtotal = model.Amount,
+                DiscountAmount = 0,
+                TaxAmount = 0,
                 Amount = model.Amount,
-                PaymentStatus = "Pending",
-                DateGenerated = DateTime.UtcNow
+                PaymentStatus = PendingStatus,
+                Notes = model.Notes,
+                DateGenerated = DateTime.UtcNow,
+                Items = new List<BillItem>
+                {
+                    new BillItem
+                    {
+                        Description = string.IsNullOrWhiteSpace(model.Description) ? "Manual billing item" : model.Description,
+                        Quantity = 1,
+                        UnitPrice = model.Amount,
+                        LineTotal = model.Amount
+                    }
+                }
             };
 
             _context.Bills.Add(bill);
             await _context.SaveChangesAsync();
 
-            await _auditService.LogAsync("PHI_WRITE", "Billing", bill.Id.ToString(), $"Manually generated pending bill of amount {model.Amount} for patient {model.PatientId}", "Success");
-            return Ok(bill);
+            return CreatedAtAction(nameof(GetBillById), new { id = bill.Id }, bill);
+        }
+
+        [HttpPost("appointments/{appointmentId}/generate")]
+        public async Task<IActionResult> GenerateAppointmentBill(int appointmentId, [FromBody] AppointmentBillModel model)
+        {
+            var appointment = await _context.Appointments
+                .Include(a => a.Patient)
+                .FirstOrDefaultAsync(a => a.Id == appointmentId);
+
+            if (appointment == null) return NotFound(new { Message = "Appointment not found" });
+
+            var existingBill = await _context.Bills
+                .Include(b => b.Items)
+                .FirstOrDefaultAsync(b => b.AppointmentId == appointmentId && b.PaymentStatus != CancelledStatus);
+
+            if (existingBill != null)
+                return BadRequest(new { Message = "An active invoice already exists for this appointment.", BillId = existingBill.Id });
+
+            var serviceItems = model?.Items ?? new List<AppointmentBillItemModel>();
+            if (!serviceItems.Any())
+            {
+                var consultationService = await GetConsultationServiceAsync();
+                serviceItems.Add(new AppointmentBillItemModel
+                {
+                    HospitalServiceId = consultationService.Id,
+                    Quantity = 1
+                });
+            }
+
+            List<BillItem> items;
+            try
+            {
+                items = await BuildBillItemsAsync(serviceItems);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { Message = ex.Message });
+            }
+            var subtotal = items.Sum(i => i.LineTotal);
+            var discount = model?.DiscountAmount ?? 0;
+            var tax = model?.TaxAmount ?? 0;
+            var total = subtotal - discount + tax;
+
+            if (total < 0) return BadRequest(new { Message = "Invoice total cannot be negative." });
+
+            var bill = new Bill
+            {
+                PatientId = appointment.PatientId,
+                AppointmentId = appointment.Id,
+                InvoiceNumber = await GenerateInvoiceNumberAsync(),
+                Subtotal = subtotal,
+                DiscountAmount = discount,
+                TaxAmount = tax,
+                Amount = total,
+                PaymentStatus = PendingStatus,
+                Notes = model?.Notes,
+                DateGenerated = DateTime.UtcNow,
+                Items = items
+            };
+
+            _context.Bills.Add(bill);
+            await _context.SaveChangesAsync();
+
+            return CreatedAtAction(nameof(GetBillById), new { id = bill.Id }, bill);
         }
 
         [HttpPut("{id}/pay")]
         [Authorize(Roles = "Admin,Doctor")] // PHIPA: Only Admin/Doctor can mark invoices as paid
         public async Task<IActionResult> PayBill(int id)
+        {
+            return await UpdateBillStatus(id, new BillStatusUpdateModel { PaymentStatus = PaidStatus });
+        }
+
+        [HttpPut("{id}/status")]
+        public async Task<IActionResult> UpdateBillStatus(int id, [FromBody] BillStatusUpdateModel model)
         {
             var bill = await _context.Bills.FindAsync(id);
             if (bill == null)
@@ -70,28 +196,150 @@ namespace SHMS.Backend.Controllers
                 return NotFound(new { Message = "Invoice not found" });
             }
 
-            bill.PaymentStatus = "Paid";
+            if (!IsValidPaymentStatus(model?.PaymentStatus))
+                return BadRequest(new { Message = "PaymentStatus must be Pending, Paid, or Cancelled." });
+
+            bill.PaymentStatus = model.PaymentStatus;
+            bill.DatePaid = model.PaymentStatus == PaidStatus ? DateTime.UtcNow : (DateTime?)null;
             await _context.SaveChangesAsync();
 
             await _auditService.LogAsync("PHI_WRITE", "Billing", id.ToString(), $"Recorded payment for bill {id} of patient {bill.PatientId}", "Success");
             return Ok(bill);
         }
 
+        [HttpGet("services")]
+        public async Task<IActionResult> GetServices()
+        {
+            var services = await _context.HospitalServices
+                .OrderBy(s => s.Category)
+                .ThenBy(s => s.Name)
+                .ToListAsync();
+
+            return Ok(services);
+        }
+
+        [HttpPost("services")]
+        public async Task<IActionResult> CreateService([FromBody] HospitalServiceModel model)
+        {
+            if (model == null || string.IsNullOrWhiteSpace(model.Name) || model.Price < 0)
+                return BadRequest(new { Message = "Name and non-negative Price are required." });
+
+            var service = new HospitalService
+            {
+                Name = model.Name,
+                Category = string.IsNullOrWhiteSpace(model.Category) ? "General" : model.Category,
+                Price = model.Price,
+                IsActive = true
+            };
+
+            _context.HospitalServices.Add(service);
+            await _context.SaveChangesAsync();
+
+            return Ok(service);
+        }
+
+        [HttpGet("expenses")]
+        public async Task<IActionResult> GetExpenses()
+        {
+            var expenses = await _context.Expenses
+                .OrderByDescending(e => e.ExpenseDate)
+                .ThenByDescending(e => e.Id)
+                .ToListAsync();
+
+            return Ok(expenses);
+        }
+
         [HttpGet("stats")]
         public async Task<IActionResult> GetBillingStats()
         {
             var bills = await _context.Bills.ToListAsync();
-            var totalRevenue = bills.Where(b => b.PaymentStatus == "Paid").Sum(b => b.Amount);
-            var pendingAmount = bills.Where(b => b.PaymentStatus == "Pending").Sum(b => b.Amount);
-            var totalInvoiceCount = bills.Count;
+            var expenses = await _context.Expenses.ToListAsync();
+            var totalRevenue = bills.Where(b => b.PaymentStatus == PaidStatus).Sum(b => b.Amount);
+            var pendingAmount = bills.Where(b => b.PaymentStatus == PendingStatus).Sum(b => b.Amount);
+            var cancelledAmount = bills.Where(b => b.PaymentStatus == CancelledStatus).Sum(b => b.Amount);
+            var totalExpenses = expenses.Sum(e => e.Amount);
 
             await _auditService.LogAsync("PHI_READ", "Billing", "STATS", "Viewed aggregate billing statistics dashboard", "Success");
             return Ok(new
             {
                 TotalRevenue = totalRevenue,
                 PendingAmount = pendingAmount,
-                TotalInvoiceCount = totalInvoiceCount
+                CancelledAmount = cancelledAmount,
+                TotalExpenses = totalExpenses,
+                NetIncome = totalRevenue - totalExpenses,
+                TotalInvoiceCount = bills.Count,
+                PaidInvoiceCount = bills.Count(b => b.PaymentStatus == PaidStatus),
+                PendingInvoiceCount = bills.Count(b => b.PaymentStatus == PendingStatus)
             });
+        }
+
+        private async Task<string> GenerateInvoiceNumberAsync()
+        {
+            var nextId = await _context.Bills.CountAsync() + 1;
+            return $"INV-{DateTime.UtcNow:yyyyMMdd}-{nextId:D5}";
+        }
+
+        private async Task<HospitalService> GetConsultationServiceAsync()
+        {
+            var service = await _context.HospitalServices
+                .FirstOrDefaultAsync(s => s.Name == "Consultation" && s.IsActive);
+
+            if (service != null) return service;
+
+            service = new HospitalService
+            {
+                Name = "Consultation",
+                Category = "Appointment",
+                Price = 100.00m,
+                IsActive = true
+            };
+
+            _context.HospitalServices.Add(service);
+            await _context.SaveChangesAsync();
+            return service;
+        }
+
+        private async Task<List<BillItem>> BuildBillItemsAsync(List<AppointmentBillItemModel> serviceItems)
+        {
+            var items = new List<BillItem>();
+
+            foreach (var item in serviceItems)
+            {
+                if (item.Quantity <= 0) item.Quantity = 1;
+
+                HospitalService service = null;
+                if (item.HospitalServiceId.HasValue)
+                {
+                    service = await _context.HospitalServices
+                        .FirstOrDefaultAsync(s => s.Id == item.HospitalServiceId.Value && s.IsActive);
+
+                    if (service == null)
+                        throw new InvalidOperationException($"Hospital service #{item.HospitalServiceId.Value} was not found.");
+                }
+
+                var description = service?.Name ?? item.Description;
+                if (string.IsNullOrWhiteSpace(description))
+                    throw new InvalidOperationException("Each invoice item needs a service or description.");
+
+                var unitPrice = item.UnitPrice ?? service?.Price ?? 0;
+                var lineTotal = unitPrice * item.Quantity;
+
+                items.Add(new BillItem
+                {
+                    HospitalServiceId = service?.Id,
+                    Description = description,
+                    Quantity = item.Quantity,
+                    UnitPrice = unitPrice,
+                    LineTotal = lineTotal
+                });
+            }
+
+            return items;
+        }
+
+        private static bool IsValidPaymentStatus(string status)
+        {
+            return status == PendingStatus || status == PaidStatus || status == CancelledStatus;
         }
     }
 
@@ -99,5 +347,35 @@ namespace SHMS.Backend.Controllers
     {
         public int PatientId { get; set; }
         public decimal Amount { get; set; }
+        public string Description { get; set; }
+        public string Notes { get; set; }
+    }
+
+    public class AppointmentBillModel
+    {
+        public List<AppointmentBillItemModel> Items { get; set; }
+        public decimal DiscountAmount { get; set; }
+        public decimal TaxAmount { get; set; }
+        public string Notes { get; set; }
+    }
+
+    public class AppointmentBillItemModel
+    {
+        public int? HospitalServiceId { get; set; }
+        public string Description { get; set; }
+        public int Quantity { get; set; }
+        public decimal? UnitPrice { get; set; }
+    }
+
+    public class BillStatusUpdateModel
+    {
+        public string PaymentStatus { get; set; }
+    }
+
+    public class HospitalServiceModel
+    {
+        public string Name { get; set; }
+        public string Category { get; set; }
+        public decimal Price { get; set; }
     }
 }
