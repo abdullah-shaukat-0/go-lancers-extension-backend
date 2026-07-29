@@ -3,7 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using SHMS.Backend.Data;
 using SHMS.Backend.Models;
-using System.Security.Claims;
+using SHMS.Backend.Services;
 using System.Threading.Tasks;
 
 namespace SHMS.Backend.Controllers
@@ -14,9 +14,9 @@ namespace SHMS.Backend.Controllers
     public class PatientsController : ControllerBase
     {
         private readonly SHMSDbContext _context;
-        private readonly Services.IAuditService _auditService;
+        private readonly IAuditService _auditService;
 
-        public PatientsController(SHMSDbContext context, Services.IAuditService auditService)
+        public PatientsController(SHMSDbContext context, IAuditService auditService)
         {
             _context = context;
             _auditService = auditService;
@@ -29,7 +29,15 @@ namespace SHMS.Backend.Controllers
             var patients = await _context.Patients
                 .Include(p => p.User)
                 .ToListAsync();
-            await _auditService.LogAsync("PHI_READ", "Patients", "ALL", "Accessed list of all patients", "Success");
+
+            await _auditService.LogAsync(new AuditLogEntry
+            {
+                Action       = "VIEW_PATIENT_LIST",
+                ResourceType = "Patient",
+                ResourceId   = "all",
+                Details      = $"Retrieved list of {patients.Count} patients"
+            });
+
             return Ok(patients);
         }
 
@@ -41,8 +49,15 @@ namespace SHMS.Backend.Controllers
                 .FirstOrDefaultAsync(p => p.Id == id);
 
             if (patient == null) return NotFound(new { Message = "Patient not found" });
-            if (User.IsInRole("Patient") && patient.UserId != User.FindFirstValue(ClaimTypes.NameIdentifier))
-                return Forbid();
+
+            await _auditService.LogAsync(new AuditLogEntry
+            {
+                PatientId    = id,
+                Action       = "VIEW_PATIENT_PROFILE",
+                ResourceType = "Patient",
+                ResourceId   = id.ToString(),
+                Details      = $"Viewed profile for patient #{id}"
+            });
 
             return Ok(patient);
         }
@@ -66,7 +81,14 @@ namespace SHMS.Backend.Controllers
             _context.Entry(patient).State = EntityState.Modified;
             await _context.SaveChangesAsync();
 
-            await _auditService.LogAsync("PHI_WRITE", "Patients", id.ToString(), $"Updated medical history/profile details for patient {patient.User?.FullName ?? id.ToString()}", "Success");
+            await _auditService.LogAsync(new AuditLogEntry
+            {
+                PatientId    = id,
+                Action       = "UPDATE_PATIENT_PROFILE",
+                ResourceType = "Patient",
+                ResourceId   = id.ToString(),
+                Details      = $"Updated profile fields for patient #{id}"
+            });
 
             return Ok(patient);
         }

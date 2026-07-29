@@ -3,6 +3,7 @@ using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -10,8 +11,10 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.IdentityModel.Tokens;
 using SHMS.Backend.Data;
+using SHMS.Backend.Filters;
 using SHMS.Backend.Hubs;
 using SHMS.Backend.Models;
+using SHMS.Backend.Services;
 
 namespace SHMS.Backend
 {
@@ -63,6 +66,21 @@ namespace SHMS.Backend
                     ValidIssuer = Configuration["JWT:ValidIssuer"] ?? "http://localhost:5050",
                     IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secret))
                 };
+                // Allow SignalR WebSocket connections to pass the JWT token via query string
+                // because WebSocket/SSE transports cannot set HTTP Authorization headers
+                options.Events = new JwtBearerEvents
+                {
+                    OnMessageReceived = context =>
+                    {
+                        var accessToken = context.Request.Query["access_token"];
+                        var path = context.HttpContext.Request.Path;
+                        if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/hubs"))
+                        {
+                            context.Token = accessToken;
+                        }
+                        return System.Threading.Tasks.Task.CompletedTask;
+                    }
+                };
             });
 
             // Register HttpContextAccessor and AuditService
@@ -84,7 +102,14 @@ namespace SHMS.Backend
             // Configure SignalR
             services.AddSignalR();
 
-            services.AddControllers();
+            // Audit logging infrastructure
+            services.AddHttpContextAccessor();
+            services.AddScoped<IAuditService, AuditService>();
+
+            services.AddControllers(options =>
+            {
+                options.Filters.Add<UnauthorizedAuditFilter>();
+            });
         }
 
         // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.

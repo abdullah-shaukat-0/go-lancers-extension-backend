@@ -5,6 +5,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.IdentityModel.Tokens;
 using SHMS.Backend.Data;
 using SHMS.Backend.Models;
+using SHMS.Backend.Services;
 using System;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
@@ -21,14 +22,14 @@ namespace SHMS.Backend.Controllers
         private readonly RoleManager<IdentityRole> _roleManager;
         private readonly SHMSDbContext _context;
         private readonly IConfiguration _configuration;
-        private readonly Services.IAuditService _auditService;
+        private readonly IAuditService _auditService;
 
         public AuthController(
             UserManager<ApplicationUser> userManager,
             RoleManager<IdentityRole> roleManager,
             SHMSDbContext context,
             IConfiguration configuration,
-            Services.IAuditService auditService)
+            IAuditService auditService)
         {
             _userManager = userManager;
             _roleManager = roleManager;
@@ -117,6 +118,17 @@ namespace SHMS.Backend.Controllers
                 await _context.SaveChangesAsync();
             }
 
+            await _auditService.LogAsync(new AuditLogEntry
+            {
+                Action           = "REGISTER",
+                ResourceType     = "User",
+                ResourceId       = user.Id,
+                Details          = $"New {model.Role} account registered: {model.Username}",
+                OverrideUserId   = user.Id,
+                OverrideUserName = user.UserName,
+                OverrideUserRole = model.Role
+            });
+
             return Ok(new { Status = "Success", Message = "User created successfully!" });
         }
 
@@ -140,6 +152,17 @@ namespace SHMS.Backend.Controllers
                 // Simulated Email Dispatch for Ontario compliance (printing to console/debug logs)
                 Console.WriteLine($"[EMAIL SERVICE] Sending secure MFA verification code to patient/staff email {user.Email}. Code: {mfaCode}");
 
+                await _auditService.LogAsync(new AuditLogEntry
+                {
+                    Action           = "LOGIN",
+                    ResourceType     = "User",
+                    ResourceId       = user.Id,
+                    Details          = $"User '{user.UserName}' ({user.Role}) logged in successfully",
+                    OverrideUserId   = user.Id,
+                    OverrideUserName = user.UserName,
+                    OverrideUserRole = user.Role
+                });
+
                 return Ok(new
                 {
                     mfaRequired = true,
@@ -147,7 +170,17 @@ namespace SHMS.Backend.Controllers
                     message = "Verification code dispatched to your registered email."
                 });
             }
-            await _auditService.LogAnonymousAsync(model.Username, "LOGIN_FAILURE", "Invalid username or password credentials", "Failure", HttpContext.Connection.RemoteIpAddress?.ToString());
+
+            await _auditService.LogAsync(new AuditLogEntry
+            {
+                Action           = "LOGIN_FAILED",
+                ResourceType     = "User",
+                ResourceId       = model.Username,
+                Details          = $"Failed login attempt for username: {model.Username}",
+                WasSuccessful    = false,
+                OverrideUserName = model.Username
+            });
+
             return Unauthorized(new { Message = "Invalid username or password" });
         }
 

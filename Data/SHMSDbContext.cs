@@ -22,7 +22,7 @@ namespace SHMS.Backend.Data
         public DbSet<Expense> Expenses { get; set; }
         public DbSet<CareInstruction> CareInstructions { get; set; }
         public DbSet<PatientNotification> PatientNotifications { get; set; }
-        public DbSet<PatientCorrectionRequest> PatientCorrectionRequests { get; set; }
+        public DbSet<AuditLog> AuditLogs { get; set; }
 
         protected override void OnModelCreating(ModelBuilder builder)
         {
@@ -120,18 +120,9 @@ namespace SHMS.Backend.Data
                 .HasForeignKey(pn => pn.PatientId)
                 .OnDelete(DeleteBehavior.Cascade);
 
-            // PatientCorrectionRequest
-            builder.Entity<PatientCorrectionRequest>()
-                .HasOne(pcr => pcr.Patient)
-                .WithMany()
-                .HasForeignKey(pcr => pcr.PatientId)
-                .OnDelete(DeleteBehavior.Restrict);
-
-            builder.Entity<PatientCorrectionRequest>()
-                .HasOne(pcr => pcr.ReviewedByUser)
-                .WithMany()
-                .HasForeignKey(pcr => pcr.ReviewedByUserId)
-                .OnDelete(DeleteBehavior.SetNull);
+            // AuditLog — standalone, no navigation properties, fully immutable
+            builder.Entity<AuditLog>()
+                .HasKey(a => a.Id);
         }
     }
 }

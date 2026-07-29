@@ -7,12 +7,6 @@ using System.Threading.Tasks;
 
 namespace SHMS.Backend.Services
 {
-    public interface IAuditService
-    {
-        Task LogAsync(string action, string resource, string resourceId, string details, string outcome);
-        Task LogAnonymousAsync(string username, string action, string details, string outcome, string ipAddress);
-    }
-
     public class AuditService : IAuditService
     {
         private readonly SHMSDbContext _context;
@@ -24,59 +18,32 @@ namespace SHMS.Backend.Services
             _httpContextAccessor = httpContextAccessor;
         }
 
-        public async Task LogAsync(string action, string resource, string resourceId, string details, string outcome)
+        public async Task LogAsync(AuditLogEntry entry)
         {
             var httpContext = _httpContextAccessor.HttpContext;
-            string userId = "System";
-            string username = "System";
-            string role = "System";
-            string ipAddress = "0.0.0.0";
+            var principal = httpContext?.User;
 
-            if (httpContext != null)
-            {
-                ipAddress = httpContext.Connection.RemoteIpAddress?.ToString() ?? "0.0.0.0";
-                
-                var user = httpContext.User;
-                if (user?.Identity?.IsAuthenticated == true)
-                {
-                    userId = user.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "Unknown";
-                    username = user.Identity.Name ?? "Unknown";
-                    role = user.FindFirst(ClaimTypes.Role)?.Value ?? "Unknown";
-                }
-            }
+            var userId   = entry.OverrideUserId   ?? principal?.FindFirstValue(ClaimTypes.NameIdentifier) ?? "anonymous";
+            var userName = entry.OverrideUserName ?? principal?.FindFirstValue(ClaimTypes.Name)
+                        ?? principal?.FindFirstValue("sub")
+                        ?? "anonymous";
+            var userRole = entry.OverrideUserRole ?? principal?.FindFirstValue(ClaimTypes.Role) ?? "unknown";
+
+            var ipAddress = httpContext?.Connection?.RemoteIpAddress?.ToString() ?? "unknown";
 
             var log = new AuditLog
             {
-                Timestamp = DateTime.UtcNow,
-                UserId = userId,
-                Username = username,
-                Role = role,
-                IpAddress = ipAddress,
-                Action = action,
-                Resource = resource,
-                ResourceId = resourceId,
-                Details = details,
-                Outcome = outcome
-            };
-
-            _context.AuditLogs.Add(log);
-            await _context.SaveChangesAsync();
-        }
-
-        public async Task LogAnonymousAsync(string username, string action, string details, string outcome, string ipAddress)
-        {
-            var log = new AuditLog
-            {
-                Timestamp = DateTime.UtcNow,
-                UserId = "Anonymous",
-                Username = username ?? "Anonymous",
-                Role = "None",
-                IpAddress = ipAddress ?? "0.0.0.0",
-                Action = action,
-                Resource = "Authentication",
-                ResourceId = null,
-                Details = details,
-                Outcome = outcome
+                Timestamp     = DateTime.UtcNow,
+                UserId        = userId,
+                UserName      = userName,
+                UserRole      = userRole,
+                PatientId     = entry.PatientId,
+                Action        = entry.Action,
+                ResourceType  = entry.ResourceType,
+                ResourceId    = entry.ResourceId,
+                Details       = entry.Details,
+                IpAddress     = ipAddress,
+                WasSuccessful = entry.WasSuccessful
             };
 
             _context.AuditLogs.Add(log);
