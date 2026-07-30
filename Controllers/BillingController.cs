@@ -7,6 +7,7 @@ using SHMS.Backend.Services;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Security.Claims;
 using System.Threading.Tasks;
 
 namespace SHMS.Backend.Controllers
@@ -16,6 +17,10 @@ namespace SHMS.Backend.Controllers
     [Authorize]
     public class BillingController : ControllerBase
     {
+        private const string PendingStatus = "Pending";
+        private const string PaidStatus = "Paid";
+        private const string CancelledStatus = "Cancelled";
+
         private readonly SHMSDbContext _context;
         private readonly IAuditService _auditService;
 
@@ -28,6 +33,18 @@ namespace SHMS.Backend.Controllers
         [HttpGet]
         public async Task<IActionResult> GetAllBills(int? patientId, string status)
         {
+            if (User.IsInRole("Patient"))
+            {
+                var currentPatientId = await GetCurrentPatientIdAsync();
+                if (!currentPatientId.HasValue)
+                    return Forbid();
+
+                if (patientId.HasValue && patientId.Value != currentPatientId.Value)
+                    return Forbid();
+
+                patientId = currentPatientId.Value;
+            }
+
             var query = _context.Bills
                 .Include(b => b.Patient).ThenInclude(p => p.User)
                 .Include(b => b.Appointment).ThenInclude(a => a.Doctor).ThenInclude(d => d.User)
@@ -40,7 +57,59 @@ namespace SHMS.Backend.Controllers
             if (!string.IsNullOrWhiteSpace(status))
                 query = query.Where(b => b.PaymentStatus == status);
 
-            var bills = await query.OrderByDescending(b => b.DateGenerated).ToListAsync();
+            var bills = await query
+                .OrderByDescending(b => b.DateGenerated)
+                .Select(b => new
+                {
+                    b.Id,
+                    b.InvoiceNumber,
+                    b.PatientId,
+                    b.AppointmentId,
+                    b.Subtotal,
+                    b.DiscountAmount,
+                    b.TaxAmount,
+                    b.Amount,
+                    b.PaymentStatus,
+                    b.Notes,
+                    b.DateGenerated,
+                    b.DatePaid,
+                    Patient = new
+                    {
+                        b.Patient.Id,
+                        User = new
+                        {
+                            b.Patient.User.FullName
+                        }
+                    },
+                    Appointment = b.Appointment == null ? null : new
+                    {
+                        b.Appointment.Id,
+                        Doctor = new
+                        {
+                            User = new
+                            {
+                                b.Appointment.Doctor.User.FullName
+                            }
+                        }
+                    },
+                    Items = b.Items.Select(i => new
+                    {
+                        i.Id,
+                        i.Description,
+                        i.Quantity,
+                        i.UnitPrice,
+                        i.LineTotal,
+                        HospitalService = i.HospitalService == null ? null : new
+                        {
+                            i.HospitalService.Id,
+                            i.HospitalService.Name,
+                            i.HospitalService.Category,
+                            i.HospitalService.Price,
+                            i.HospitalService.IsActive
+                        }
+                    }).ToList()
+                })
+                .ToListAsync();
 
             await _auditService.LogAsync(new AuditLogEntry
             {
@@ -52,6 +121,12 @@ namespace SHMS.Backend.Controllers
             });
 
             return Ok(bills);
+        }
+
+        [HttpGet("patient/{patientId}")]
+        public Task<IActionResult> GetPatientBills(int patientId, string status)
+        {
+            return GetAllBills(patientId, status);
         }
 
         [HttpPost]
@@ -104,13 +179,28 @@ namespace SHMS.Backend.Controllers
         }
 
         [HttpPut("{id}/pay")]
-        [Authorize(Roles = "Admin,Doctor")] // PHIPA: Only Admin/Doctor can mark invoices as paid
+        [Authorize(Roles = "Admin,Doctor,Patient")]
         public async Task<IActionResult> PayBill(int id)
         {
-            return await UpdateBillStatus(id, new BillStatusUpdateModel { PaymentStatus = PaidStatus });
+            var bill = await _context.Bills.FindAsync(id);
+            if (bill == null)
+            {
+                await _auditService.LogAsync("PHI_WRITE", "Billing", id.ToString(), "Attempted to pay invoice but it was not found", "Failure");
+                return NotFound(new { Message = "Invoice not found" });
+            }
+
+            if (User.IsInRole("Patient"))
+            {
+                var currentPatientId = await GetCurrentPatientIdAsync();
+                if (!currentPatientId.HasValue || bill.PatientId != currentPatientId.Value)
+                    return Forbid();
+            }
+
+            return await UpdateBillStatusInternal(bill, PaidStatus);
         }
 
         [HttpPut("{id}/status")]
+        [Authorize(Roles = "Admin,Doctor,Nurse")]
         public async Task<IActionResult> UpdateBillStatus(int id, [FromBody] BillStatusUpdateModel model)
         {
             var bill = await _context.Bills.FindAsync(id);
@@ -123,8 +213,13 @@ namespace SHMS.Backend.Controllers
             if (!IsValidPaymentStatus(model?.PaymentStatus))
                 return BadRequest(new { Message = "PaymentStatus must be Pending, Paid, or Cancelled." });
 
-            bill.PaymentStatus = model.PaymentStatus;
-            bill.DatePaid = model.PaymentStatus == PaidStatus ? DateTime.UtcNow : (DateTime?)null;
+            return await UpdateBillStatusInternal(bill, model.PaymentStatus);
+        }
+
+        private async Task<IActionResult> UpdateBillStatusInternal(Bill bill, string paymentStatus)
+        {
+            bill.PaymentStatus = paymentStatus;
+            bill.DatePaid = paymentStatus == PaidStatus ? DateTime.UtcNow : (DateTime?)null;
             await _context.SaveChangesAsync();
 
             await _auditService.LogAsync(new AuditLogEntry
@@ -132,8 +227,8 @@ namespace SHMS.Backend.Controllers
                 PatientId    = bill.PatientId,
                 Action       = "PAY_INVOICE",
                 ResourceType = "Bill",
-                ResourceId   = id.ToString(),
-                Details      = $"Invoice #{id} marked as paid for patient #{bill.PatientId}"
+                ResourceId   = bill.Id.ToString(),
+                Details      = $"Invoice #{bill.Id} marked as {paymentStatus.ToLower()} for patient #{bill.PatientId}"
             });
 
             return Ok(bill);
@@ -272,6 +367,19 @@ namespace SHMS.Backend.Controllers
         private static bool IsValidPaymentStatus(string status)
         {
             return status == PendingStatus || status == PaidStatus || status == CancelledStatus;
+        }
+
+        private async Task<int?> GetCurrentPatientIdAsync()
+        {
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(userId))
+                return null;
+
+            var patient = await _context.Patients
+                .AsNoTracking()
+                .FirstOrDefaultAsync(p => p.UserId == userId);
+
+            return patient?.Id;
         }
     }
 

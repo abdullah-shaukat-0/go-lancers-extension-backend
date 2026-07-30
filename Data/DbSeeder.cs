@@ -11,6 +11,8 @@ namespace SHMS.Backend.Data
 {
     public static class DbSeeder
     {
+        private const string DemoPassword = "StrongPass123!";
+
         public static async Task SeedAsync(IServiceProvider serviceProvider)
         {
             var context = serviceProvider.GetRequiredService<SHMSDbContext>();
@@ -38,9 +40,10 @@ namespace SHMS.Backend.Data
                     FullName = "Hospital System Administrator",
                     Role = "Admin"
                 };
-                await userManager.CreateAsync(adminUser, "StrongPass123!");
+                await userManager.CreateAsync(adminUser, DemoPassword);
                 await userManager.AddToRoleAsync(adminUser, "Admin");
             }
+            await EnsureDemoPasswordAsync(userManager, adminUser);
 
             // 3. Seed Doctors (6 Doctors)
             var doctorsData = new List<(string Username, string Name, string Email, string Specialty, string Roster)>
@@ -67,7 +70,7 @@ namespace SHMS.Backend.Data
                         FullName = doc.Name,
                         Role = "Doctor"
                     };
-                    var result = await userManager.CreateAsync(docUser, "StrongPass123!");
+                    var result = await userManager.CreateAsync(docUser, DemoPassword);
                     if (result.Succeeded)
                     {
                         await userManager.AddToRoleAsync(docUser, "Doctor");
@@ -87,6 +90,8 @@ namespace SHMS.Backend.Data
                     var existingDoc = context.Doctors.FirstOrDefault(d => d.UserId == docUser.Id);
                     if (existingDoc != null) doctorEntities.Add(existingDoc);
                 }
+
+                await EnsureDemoPasswordAsync(userManager, docUser);
             }
 
             await context.SaveChangesAsync();
@@ -114,7 +119,7 @@ namespace SHMS.Backend.Data
                         FullName = nur.Name,
                         Role = "Nurse"
                     };
-                    var result = await userManager.CreateAsync(nurUser, "StrongPass123!");
+                    var result = await userManager.CreateAsync(nurUser, DemoPassword);
                     if (result.Succeeded)
                     {
                         await userManager.AddToRoleAsync(nurUser, "Nurse");
@@ -134,6 +139,8 @@ namespace SHMS.Backend.Data
                     var existingNurse = context.Nurses.FirstOrDefault(n => n.UserId == nurUser.Id);
                     if (existingNurse != null) nurseEntities.Add(existingNurse);
                 }
+
+                await EnsureDemoPasswordAsync(userManager, nurUser);
             }
 
             await context.SaveChangesAsync();
@@ -167,7 +174,7 @@ namespace SHMS.Backend.Data
                         FullName = pat.Name,
                         Role = "Patient"
                     };
-                    var result = await userManager.CreateAsync(patUser, "StrongPass123!");
+                    var result = await userManager.CreateAsync(patUser, DemoPassword);
                     if (result.Succeeded)
                     {
                         await userManager.AddToRoleAsync(patUser, "Patient");
@@ -188,6 +195,8 @@ namespace SHMS.Backend.Data
                     var existingPat = context.Patients.FirstOrDefault(p => p.UserId == patUser.Id);
                     if (existingPat != null) patientEntities.Add(existingPat);
                 }
+
+                await EnsureDemoPasswordAsync(userManager, patUser);
             }
 
             await context.SaveChangesAsync();
@@ -546,6 +555,18 @@ namespace SHMS.Backend.Data
                     }
                 }
             };
+        }
+
+        private static async Task EnsureDemoPasswordAsync(UserManager<ApplicationUser> userManager, ApplicationUser user)
+        {
+            if (user == null) return;
+
+            if (await userManager.HasPasswordAsync(user))
+            {
+                await userManager.RemovePasswordAsync(user);
+            }
+
+            await userManager.AddPasswordAsync(user, DemoPassword);
         }
     }
 }

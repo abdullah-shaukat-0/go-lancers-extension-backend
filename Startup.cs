@@ -125,6 +125,7 @@ namespace SHMS.Backend
             {
                 var context = serviceScope.ServiceProvider.GetRequiredService<SHMSDbContext>();
                 context.Database.EnsureCreated();
+                MergedSchemaUpdater.EnsureSchema(context);
                 BillingSchemaUpdater.EnsureSchema(context);
                 CorrectionRequestSchemaUpdater.EnsureSchema(context);
                 DbSeeder.SeedAsync(serviceScope.ServiceProvider).Wait();

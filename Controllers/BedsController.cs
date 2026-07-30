@@ -6,6 +6,7 @@ using SHMS.Backend.Data;
 using SHMS.Backend.Hubs;
 using SHMS.Backend.Models;
 using SHMS.Backend.Services;
+using System.Linq;
 using System.Threading.Tasks;
 
 namespace SHMS.Backend.Controllers

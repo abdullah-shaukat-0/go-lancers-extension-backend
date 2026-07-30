@@ -23,6 +23,7 @@ namespace SHMS.Backend.Data
         public DbSet<CareInstruction> CareInstructions { get; set; }
         public DbSet<PatientNotification> PatientNotifications { get; set; }
         public DbSet<AuditLog> AuditLogs { get; set; }
+        public DbSet<PatientCorrectionRequest> PatientCorrectionRequests { get; set; }
 
         protected override void OnModelCreating(ModelBuilder builder)
         {
@@ -123,6 +124,18 @@ namespace SHMS.Backend.Data
             // AuditLog — standalone, no navigation properties, fully immutable
             builder.Entity<AuditLog>()
                 .HasKey(a => a.Id);
+
+            builder.Entity<PatientCorrectionRequest>()
+                .HasOne(r => r.Patient)
+                .WithMany()
+                .HasForeignKey(r => r.PatientId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            builder.Entity<PatientCorrectionRequest>()
+                .HasOne(r => r.ReviewedByUser)
+                .WithMany()
+                .HasForeignKey(r => r.ReviewedByUserId)
+                .OnDelete(DeleteBehavior.SetNull);
         }
     }
 }

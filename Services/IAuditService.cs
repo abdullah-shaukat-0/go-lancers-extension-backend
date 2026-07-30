@@ -19,5 +19,7 @@ namespace SHMS.Backend.Services
     public interface IAuditService
     {
         Task LogAsync(AuditLogEntry entry);
+        Task LogAsync(string action, string resourceType, string resourceId, string details, string status);
+        Task LogAnonymousAsync(string username, string action, string details, string status, string ipAddress);
     }
 }

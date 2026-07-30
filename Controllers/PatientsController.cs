@@ -4,13 +4,15 @@ using Microsoft.EntityFrameworkCore;
 using SHMS.Backend.Data;
 using SHMS.Backend.Models;
 using SHMS.Backend.Services;
+using System.Linq;
+using System.Security.Claims;
 using System.Threading.Tasks;
 
 namespace SHMS.Backend.Controllers
 {
     [Route("api/[controller]")]
     [ApiController]
-    [Authorize(Roles = "Admin,Doctor,Nurse")]
+    [Authorize]
     public class PatientsController : ControllerBase
     {
         private readonly SHMSDbContext _context;
@@ -41,12 +43,44 @@ namespace SHMS.Backend.Controllers
             return Ok(patients);
         }
 
-        [HttpGet("{id}")]
+        [HttpGet("{id:int}")]
+        [Authorize]
         public async Task<IActionResult> GetPatientById(int id)
         {
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            var currentPatientId = await _context.Patients
+                .Where(p => p.UserId == userId)
+                .Select(p => (int?)p.Id)
+                .FirstOrDefaultAsync();
+
+            if (currentPatientId.HasValue)
+            {
+                id = currentPatientId.Value;
+            }
+            else if (!User.IsInRole("Admin") && !User.IsInRole("Doctor") && !User.IsInRole("Nurse"))
+            {
+                return Forbid();
+            }
+
             var patient = await _context.Patients
                 .Include(p => p.User)
-                .FirstOrDefaultAsync(p => p.Id == id);
+                .Where(p => p.Id == id)
+                .Select(p => new
+                {
+                    p.Id,
+                    p.UserId,
+                    p.MedicalHistory,
+                    p.BloodGroup,
+                    p.Gender,
+                    p.DateOfBirth,
+                    User = new
+                    {
+                        p.User.FullName,
+                        p.User.Email,
+                        p.User.UserName
+                    }
+                })
+                .FirstOrDefaultAsync();
 
             if (patient == null) return NotFound(new { Message = "Patient not found" });
 
@@ -57,6 +91,48 @@ namespace SHMS.Backend.Controllers
                 ResourceType = "Patient",
                 ResourceId   = id.ToString(),
                 Details      = $"Viewed profile for patient #{id}"
+            });
+
+            return Ok(patient);
+        }
+
+        [HttpGet("me")]
+        [Authorize]
+        public async Task<IActionResult> GetCurrentPatient()
+        {
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(userId))
+                return Forbid();
+
+            var patient = await _context.Patients
+                .Where(p => p.UserId == userId)
+                .Select(p => new
+                {
+                    p.Id,
+                    p.UserId,
+                    p.MedicalHistory,
+                    p.BloodGroup,
+                    p.Gender,
+                    p.DateOfBirth,
+                    User = new
+                    {
+                        p.User.FullName,
+                        p.User.Email,
+                        p.User.UserName
+                    }
+                })
+                .FirstOrDefaultAsync();
+
+            if (patient == null)
+                return NotFound(new { Message = "Patient profile not found for current user" });
+
+            await _auditService.LogAsync(new AuditLogEntry
+            {
+                PatientId    = patient.Id,
+                Action       = "VIEW_PATIENT_PROFILE",
+                ResourceType = "Patient",
+                ResourceId   = patient.Id.ToString(),
+                Details      = "Viewed own patient profile"
             });
 
             return Ok(patient);

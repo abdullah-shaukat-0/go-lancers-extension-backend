@@ -49,5 +49,38 @@ namespace SHMS.Backend.Services
             _context.AuditLogs.Add(log);
             await _context.SaveChangesAsync();
         }
+
+        public Task LogAsync(string action, string resourceType, string resourceId, string details, string status)
+        {
+            return LogAsync(new AuditLogEntry
+            {
+                Action = action,
+                ResourceType = resourceType,
+                ResourceId = resourceId,
+                Details = details,
+                WasSuccessful = !string.Equals(status, "Failure", StringComparison.OrdinalIgnoreCase)
+            });
+        }
+
+        public async Task LogAnonymousAsync(string username, string action, string details, string status, string ipAddress)
+        {
+            var log = new AuditLog
+            {
+                Timestamp = DateTime.UtcNow,
+                UserId = username ?? "anonymous",
+                UserName = username ?? "anonymous",
+                UserRole = "anonymous",
+                PatientId = null,
+                Action = action,
+                ResourceType = "Authentication",
+                ResourceId = username ?? "anonymous",
+                Details = details,
+                IpAddress = ipAddress ?? "unknown",
+                WasSuccessful = !string.Equals(status, "Failure", StringComparison.OrdinalIgnoreCase)
+            };
+
+            _context.AuditLogs.Add(log);
+            await _context.SaveChangesAsync();
+        }
     }
 }
